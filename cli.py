@@ -48,7 +48,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit import print_formatted_text as _pt_print
-from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from prompt_toolkit.formatted_text import ANSI as _PT_ANSI, FormattedText as _PT_FormattedText
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
@@ -447,6 +447,7 @@ except Exception:
 
 from rich import box as rich_box
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
@@ -1054,6 +1055,8 @@ class HermesCLI:
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._stream_line_count = 0   # Lines printed during streaming (for MD re-render)
+        self._stream_full_text = ""   # Accumulated raw text for Markdown re-render
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -1543,6 +1546,7 @@ class HermesCLI:
         """
         if text is None:
             self._flush_stream()
+            self._rerender_streamed_segment()
             self._reset_stream_state()
             return
         if not text:
@@ -1623,6 +1627,17 @@ class HermesCLI:
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
             return
 
+    @staticmethod
+    def _visual_line_count(text: str, columns: int) -> int:
+        """Return the number of visual terminal rows a printed line occupies."""
+        from wcwidth import wcswidth
+        from tools.ansi_strip import strip_ansi
+        clean = strip_ansi(text) if text else ""
+        w = wcswidth(clean)
+        if w <= 0 or w <= columns:
+            return 1
+        return -(-w // columns)  # ceil division
+
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
         if not text:
@@ -1658,14 +1673,17 @@ class HermesCLI:
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
             _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            self._stream_line_count += 2  # blank line + top border
 
         self._stream_buf += text
+        self._stream_full_text += text
 
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
             _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            self._stream_line_count += self._visual_line_count(line, shutil.get_terminal_size().columns)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -1675,12 +1693,59 @@ class HermesCLI:
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
             _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            self._stream_line_count += self._visual_line_count(self._stream_buf, shutil.get_terminal_size().columns)
             self._stream_buf = ""
 
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
             _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            self._stream_line_count += 1  # bottom border
+
+    def _rerender_streamed_segment(self, text: str | None = None) -> None:
+        """Erase the raw-streamed terminal output and re-render it as a Rich Markdown Panel.
+
+        Called either at intermediate turn boundaries (before tool execution) or
+        after the final agent response.  At intermediate boundaries ``text`` is
+        ``None`` and we fall back to ``self._stream_full_text`` which holds the
+        accumulated raw tokens for the current segment.
+
+        Does nothing when no streaming box was opened (nothing to erase).
+        """
+        if not (self._stream_started and self._stream_box_opened):
+            return
+        _sl_count = self._stream_line_count
+        _text = text if text is not None else self._stream_full_text
+        if _sl_count <= 0 or not _text:
+            return
+
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            label = _skin.get_branding("response_label", "⚕ Hermes")
+            _resp_color = _skin.get_color("response_border", "#CD7F32")
+            _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+        except Exception:
+            label = "⚕ Hermes"
+            _resp_color = "#CD7F32"
+            _resp_text = "#FFF8DC"
+
+        # Move cursor up over all streamed lines and erase them, then re-render
+        # via prompt_toolkit's ZeroWidthEscape so the escape sequence bypasses
+        # StdoutProxy's sanitisation (which would replace \x1b with '?').
+        _pt_print(_PT_FormattedText([
+            ('[ZeroWidthEscape]', f'\033[{_sl_count}A\033[J'),
+        ]))
+        _chat_console = ChatConsole()
+        _chat_console.print(Panel(
+            Markdown(_text),
+            title=f"[{_resp_color} bold]{label}[/]",
+            title_align="left",
+            border_style=_resp_color,
+            style=_resp_text,
+            box=rich_box.HORIZONTALS,
+            padding=(1, 2),
+        ))
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -1689,6 +1754,8 @@ class HermesCLI:
         self._stream_box_opened = False
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
+        self._stream_line_count = 0
+        self._stream_full_text = ""
         self._in_reasoning_block = False
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
@@ -5661,13 +5728,16 @@ class HermesCLI:
                     w = shutil.get_terminal_size().columns
                     _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
-                    # Response was already streamed token-by-token with box framing;
-                    # _flush_stream() already closed the box. Skip Rich Panel.
-                    pass
+                    # Clear raw streamed output and re-render with Rich Markdown.
+                    # The streaming path printed raw text token-by-token; now we
+                    # replace it with a properly formatted Markdown Panel.
+                    # Uses ZeroWidthEscape internally so ANSI cursor-movement
+                    # sequences bypass prompt_toolkit StdoutProxy's sanitisation.
+                    self._rerender_streamed_segment(text=response)
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        Markdown(response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
