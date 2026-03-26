@@ -570,8 +570,10 @@ class GatewayRunner:
             # Read live memory state from disk so the flush agent can see
             # what's already saved and avoid overwriting newer entries.
             _current_memory = ""
+            _memory_near_full = False
             try:
                 from tools.memory_tool import MEMORY_DIR
+                MEMORY_LIMITS = {"MEMORY.md": 2200, "USER.md": 1375}
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
                     ("USER.md", "USER PROFILE (who the user is)"),
@@ -581,6 +583,9 @@ class GatewayRunner:
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:
                             _current_memory += f"\n\n## Current {label}:\n{content}"
+                            limit = MEMORY_LIMITS.get(fname, 2200)
+                            if len(content) >= limit * 0.9:
+                                _memory_near_full = True
             except Exception:
                 pass  # Non-fatal — flush still works, just without the guard
 
@@ -596,6 +601,16 @@ class GatewayRunner:
                 "problem, consider saving it as a skill.\n"
                 "3. If nothing is worth saving, that's fine — just skip.\n\n"
             )
+
+            if _memory_near_full:
+                flush_prompt += (
+                    "WARNING — memory is at or near capacity (>=90% full). "
+                    "Do NOT attempt to add new entries without first removing or "
+                    "consolidating existing ones. Use action='replace' to update "
+                    "stale entries in-place, or action='remove' to delete entries "
+                    "that are now obsolete, before adding anything new. "
+                    "Adding entries when memory is full will fail.\n\n"
+                )
 
             if _current_memory:
                 flush_prompt += (
@@ -823,6 +838,32 @@ class GatewayRunner:
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return result
+
+    @staticmethod
+    def _load_cache_ttl() -> str:
+        """Load prompt cache TTL from config with env fallback.
+
+        Checks agent.cache_ttl in config.yaml first, then
+        HERMES_CACHE_TTL as a fallback. Valid values: \"5m\", \"1h\".
+        Defaults to \"5m\" for any unknown value.
+        """
+        ttl = ""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                ttl = str(cfg.get("agent", {}).get("cache_ttl", "") or "").strip()
+        except Exception:
+            pass
+        if not ttl:
+            ttl = os.getenv("HERMES_CACHE_TTL", "")
+        if ttl not in ("5m", "1h"):
+            if ttl:
+                logger.warning("Unknown cache_ttl '%s', falling back to '5m'", ttl)
+            ttl = "5m"
+        return ttl
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -1151,6 +1192,12 @@ class GatewayRunner:
                         await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
+                        # Persist to DB so the marker survives gateway restarts
+                        if self.session_store._db:
+                            try:
+                                self.session_store._db.add_flushed_session(entry.session_id)
+                            except Exception as db_err:
+                                logger.debug("Failed to persist flushed session %s: %s", entry.session_id, db_err)
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
             except Exception as e:
@@ -3572,6 +3619,7 @@ class GatewayRunner:
                     platform=platform_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    cache_ttl=self._load_cache_ttl(),
                 )
 
                 return agent.run_conversation(
@@ -4604,6 +4652,7 @@ class GatewayRunner:
         runtime: dict,
         enabled_toolsets: list,
         ephemeral_prompt: str,
+        cache_ttl: str = "5m",
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -4624,6 +4673,7 @@ class GatewayRunner:
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
+                cache_ttl,
             ],
             sort_keys=True,
             default=str,
@@ -4996,11 +5046,13 @@ class GatewayRunner:
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            _cache_ttl = self._load_cache_ttl()
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
+                _cache_ttl,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -5037,6 +5089,7 @@ class GatewayRunner:
                     honcho_config=honcho_config,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    cache_ttl=_cache_ttl,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
