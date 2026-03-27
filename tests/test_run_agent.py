@@ -1606,6 +1606,37 @@ class TestNousCredentialRefresh:
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
 
+    def test_replace_primary_openai_client_keeps_gemini_headerless(
+        self, agent, monkeypatch
+    ):
+        agent.provider = "gemini"
+        agent.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        agent._client_kwargs = {
+            "api_key": "gemini-key",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        }
+
+        rebuilt = {"kwargs": None}
+
+        class _RebuiltClient:
+            pass
+
+        def _fake_openai(**kwargs):
+            rebuilt["kwargs"] = kwargs
+            return _RebuiltClient()
+
+        with patch("run_agent.OpenAI", side_effect=_fake_openai):
+            ok = agent._replace_primary_openai_client(reason="gemini_test")
+
+        assert ok is True
+        assert rebuilt["kwargs"]["api_key"] == "gemini-key"
+        assert (
+            rebuilt["kwargs"]["base_url"]
+            == "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+        assert "default_headers" not in rebuilt["kwargs"]
+        assert isinstance(agent.client, _RebuiltClient)
+
 
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""

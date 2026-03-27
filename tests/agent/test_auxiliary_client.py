@@ -28,6 +28,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "GEMINI_API_KEY", "GEMINI_BASE_URL",
         # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
@@ -606,6 +607,19 @@ class TestVisionClientFallback:
         assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
 
+    def test_resolve_provider_client_gemini_uses_bearer_auth_flow(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-direct-key")
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client("gemini")
+
+        assert client is not None
+        assert model == "gemini-2.5-flash"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "gemini-direct-key"
+        assert call_kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert "default_headers" not in call_kwargs
+
     def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
         with (
@@ -695,6 +709,21 @@ class TestVisionClientFallback:
         assert model == "vision-model"
         assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:4567/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "vision-key"
+
+    def test_vision_explicit_gemini_uses_generic_provider_router(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-direct-key")
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "gemini")
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "gemini-2.5-flash")
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_vision_auxiliary_client()
+
+        assert client is not None
+        assert model == "gemini-2.5-flash"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "gemini-direct-key"
+        assert call_kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert "default_headers" not in call_kwargs
 
     def test_vision_direct_endpoint_requires_openai_api_key(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

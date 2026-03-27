@@ -745,6 +745,11 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                elif self.provider == "gemini":
+                    # Gemini uses the standard OpenAI-compatible bearer-auth
+                    # flow at generativelanguage.googleapis.com/v1beta/openai.
+                    # Do not inject provider-specific headers here.
+                    pass
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client

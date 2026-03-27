@@ -1,16 +1,8 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (Gemini, z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import os
-import sys
-import types
 
 import pytest
-
-# Ensure dotenv doesn't interfere
-if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
@@ -38,6 +30,7 @@ class TestProviderRegistry:
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
+        ("gemini", "Google Gemini", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
@@ -56,6 +49,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["zai"]
         assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
         assert pconfig.base_url_env_var == "GLM_BASE_URL"
+
+    def test_gemini_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["gemini"]
+        assert pconfig.api_key_env_vars == ("GEMINI_API_KEY",)
+        assert pconfig.base_url_env_var == "GEMINI_BASE_URL"
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
@@ -90,6 +88,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["gemini"].inference_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -112,6 +111,7 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "GEMINI_API_KEY", "GEMINI_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
@@ -147,6 +147,12 @@ class TestResolveProvider:
 
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
+
+    def test_explicit_gemini(self):
+        assert resolve_provider("gemini") == "gemini"
+
+    def test_alias_google(self):
+        assert resolve_provider("google") == "gemini"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
@@ -206,6 +212,10 @@ class TestResolveProvider:
     def test_auto_detects_glm_key(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "test-glm-key")
         assert resolve_provider("auto") == "zai"
+
+    def test_auto_detects_gemini_key(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+        assert resolve_provider("auto") == "gemini"
 
     def test_auto_detects_zai_key(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "test-zai-key")
@@ -331,6 +341,20 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "glm-secret-key"
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
         assert creds["source"] == "GLM_API_KEY"
+
+    def test_resolve_gemini_with_key(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret-key")
+        creds = resolve_api_key_provider_credentials("gemini")
+        assert creds["provider"] == "gemini"
+        assert creds["api_key"] == "gemini-secret-key"
+        assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert creds["source"] == "GEMINI_API_KEY"
+
+    def test_resolve_gemini_with_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+        monkeypatch.setenv("GEMINI_BASE_URL", "https://example.test/gemini-openai")
+        creds = resolve_api_key_provider_credentials("gemini")
+        assert creds["base_url"] == "https://example.test/gemini-openai"
 
     def test_resolve_copilot_with_github_token(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "gh-env-secret")
@@ -473,6 +497,15 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "glm-key"
         assert "z.ai" in result["base_url"] or "api.z.ai" in result["base_url"]
+
+    def test_runtime_gemini(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="gemini")
+        assert result["provider"] == "gemini"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gemini-key"
+        assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
 
     def test_runtime_kimi(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-key")

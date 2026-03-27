@@ -74,6 +74,11 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-2.5-pro",
         "grok-code-fast-1",
     ],
+    "gemini": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+    ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
@@ -878,6 +883,7 @@ def setup_model_provider(config: dict):
         "MiniMax China (mainland China endpoint)",
         "Kilo Code (Kilo Gateway API)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
+        "Google Gemini (Gemini API via OpenAI-compatible endpoint)",
         "AI Gateway (Vercel — 200+ models, pay-per-use)",
         "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
@@ -1349,7 +1355,39 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    elif provider_idx == 10:  # AI Gateway
+    elif provider_idx == 10:  # Google Gemini
+        selected_provider = "gemini"
+        print()
+        print_header("Google Gemini API Key")
+        pconfig = PROVIDER_REGISTRY["gemini"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://aistudio.google.com/app/apikey")
+        print()
+
+        existing_key = get_env_value("GEMINI_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  Gemini API key", password=True)
+                if api_key:
+                    save_env_value("GEMINI_API_KEY", api_key)
+                    print_success("Gemini API key updated")
+        else:
+            api_key = prompt("  Gemini API key", password=True)
+            if api_key:
+                save_env_value("GEMINI_API_KEY", api_key)
+                print_success("Gemini API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "gemini", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 11:  # AI Gateway
         selected_provider = "ai-gateway"
         print()
         print_header("AI Gateway API Key")
@@ -1381,7 +1419,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+    elif provider_idx == 12:  # Alibaba Cloud / DashScope
         selected_provider = "alibaba"
         print()
         print_header("Alibaba Cloud / DashScope API Key")
@@ -1413,7 +1451,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
         _set_model_provider(config, "alibaba", pconfig.inference_base_url)
 
-    elif provider_idx == 12:  # OpenCode Zen
+    elif provider_idx == 13:  # OpenCode Zen
         selected_provider = "opencode-zen"
         print()
         print_header("OpenCode Zen API Key")
@@ -1446,7 +1484,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 13:  # OpenCode Go
+    elif provider_idx == 14:  # OpenCode Go
         selected_provider = "opencode-go"
         print()
         print_header("OpenCode Go API Key")
@@ -1479,7 +1517,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 14:  # GitHub Copilot
+    elif provider_idx == 15:  # GitHub Copilot
         selected_provider = "copilot"
         print()
         print_header("GitHub Copilot")
@@ -1512,7 +1550,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 15:  # GitHub Copilot ACP
+    elif provider_idx == 16:  # GitHub Copilot ACP
         selected_provider = "copilot-acp"
         print()
         print_header("GitHub Copilot ACP")
@@ -1528,7 +1566,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 16 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 17 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1562,6 +1600,7 @@ def setup_model_provider(config: dict):
             "nous-api": "Nous Portal API key",
             "copilot": "GitHub Copilot",
             "copilot-acp": "GitHub Copilot ACP",
+            "gemini": "Google Gemini",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "minimax": "MiniMax",
@@ -1709,7 +1748,7 @@ def setup_model_provider(config: dict):
             model_cfg = _model_config_dict(config)
             model_cfg["api_mode"] = "chat_completions"
             config["model"] = model_cfg
-        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "opencode-zen", "opencode-go", "alibaba"):
+        elif selected_provider in ("copilot", "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "opencode-zen", "opencode-go", "alibaba"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -1770,7 +1809,7 @@ def setup_model_provider(config: dict):
     # Write provider+base_url to config.yaml only after model selection is complete.
     # This prevents a race condition where the gateway picks up a new provider
     # before the model name has been updated to match.
-    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
+    if selected_provider in ("copilot-acp", "copilot", "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
         _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)

@@ -14,6 +14,7 @@ model:
   #   "nous-api"   - Use Nous Portal via API key (requires: NOUS_API_KEY)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
   #   "nous"       - Always use Nous Portal (requires: hermes login)
+  #   "gemini"     - Use Google Gemini direct API (requires: GEMINI_API_KEY)
   #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
   #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
   #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
@@ -293,6 +294,7 @@ compression:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes login)
+#   "gemini"     - Force Google Gemini direct API (requires: GEMINI_API_KEY)
 #   "codex"      - Force Codex OAuth (requires: hermes model → Codex).
 #                  Uses gpt-5.3-codex which supports vision.
 #   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).

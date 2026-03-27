@@ -786,6 +786,7 @@ def cmd_model(args):
         "copilot-acp": "GitHub Copilot ACP",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
+        "gemini": "Google Gemini",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
@@ -812,6 +813,7 @@ def cmd_model(args):
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
+        ("gemini", "Google Gemini (Gemini API via OpenAI-compatible endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
@@ -893,7 +895,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1470,6 +1472,11 @@ _PROVIDER_MODELS = {
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
+    ],
+    "gemini": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
     ],
     "kimi-coding": [
         "kimi-for-coding",
@@ -3122,7 +3129,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

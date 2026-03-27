@@ -68,3 +68,22 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_gemini_env_vars_load_from_user_env(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "GEMINI_API_KEY=gemini-env-key\n"
+        "GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [home / ".env"]
+    assert os.getenv("GEMINI_API_KEY") == "gemini-env-key"
+    assert os.getenv("GEMINI_BASE_URL") == "https://generativelanguage.googleapis.com/v1beta/openai"

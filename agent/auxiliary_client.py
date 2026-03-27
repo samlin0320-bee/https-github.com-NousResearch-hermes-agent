@@ -11,7 +11,7 @@ Resolution order for text tasks (auto mode):
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
   5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  6. Direct API-key providers (Gemini, z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
   7. None
 
 Resolution order for vision/multimodal tasks (auto mode):
@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
+    "gemini": "gemini-2.5-flash",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7-highspeed",

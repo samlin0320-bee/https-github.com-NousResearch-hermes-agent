@@ -24,13 +24,14 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "custom", "local",
     # Common aliases
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "google", "google-gemini",
 })
 
 
@@ -154,6 +155,7 @@ def _is_custom_endpoint(base_url: str) -> bool:
 _URL_TO_PROVIDER: Dict[str, str] = {
     "api.openai.com": "openai",
     "chatgpt.com": "openai",
+    "generativelanguage.googleapis.com": "gemini",
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
