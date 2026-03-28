@@ -392,23 +392,32 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, _, _), result in zip(tasks, results):
-            if isinstance(result, Exception):
-                logging.warning(
-                    "Failed to summarize session %s: %s",
-                    session_id,
-                    result,
-                    exc_info=True,
-                )
-                continue
-            if result:
+        for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
+            # Fallback: if summarization failed, use the raw FTS snippet + truncated conversation
+            if result is None or isinstance(result, Exception):
+                fallback = match_info.get("snippet", conversation_text[:500])
+                summary = fallback
+                if isinstance(result, Exception):
+                    logging.warning(
+                        "Session %s summarization failed, using FTS snippet: %s",
+                        session_id,
+                        result,
+                    )
                 summaries.append({
                     "session_id": session_id,
                     "when": _format_timestamp(match_info.get("session_started")),
                     "source": match_info.get("source", "unknown"),
                     "model": match_info.get("model"),
-                    "summary": result,
+                    "summary": f"[Summary unavailable — raw FTS match]\n{summary}",
                 })
+                continue
+            summaries.append({
+                "session_id": session_id,
+                "when": _format_timestamp(match_info.get("session_started")),
+                "source": match_info.get("source", "unknown"),
+                "model": match_info.get("model"),
+                "summary": result,
+            })
 
         return json.dumps({
             "success": True,
