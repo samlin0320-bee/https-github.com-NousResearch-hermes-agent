@@ -1315,6 +1315,55 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return text
     
+    @staticmethod
+    def _require_mention_enabled() -> bool:
+        """Whether group messages require an explicit mention/prefix to be processed."""
+        return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes")
+
+    @staticmethod
+    def _mention_patterns() -> List[str]:
+        """Configured Telegram mention regex patterns."""
+        raw = os.getenv("TELEGRAM_MENTION_PATTERNS", "")
+        if not raw:
+            return []
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    @classmethod
+    def _strip_leading_mention(cls, text: str) -> str:
+        """Remove the first matching mention/prefix from the start of the message."""
+        cleaned = text or ""
+        for pattern in cls._mention_patterns():
+            try:
+                updated = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).lstrip(" ,:-\t")
+            except re.error:
+                continue
+            if updated != cleaned:
+                return updated.strip()
+        return cleaned.strip()
+
+    def _message_mentions_bot(self, message: Message) -> bool:
+        """Return True if a Telegram group message explicitly invokes the bot."""
+        text = (message.text or message.caption or "").strip()
+        if not text:
+            return False
+
+        for pattern in self._mention_patterns():
+            try:
+                if re.search(pattern, text, flags=re.IGNORECASE):
+                    return True
+            except re.error:
+                logger.warning("[Telegram] Invalid mention pattern ignored: %s", pattern)
+
+        bot = getattr(self, "_bot", None)
+        bot_id = str(getattr(bot, "id", "")) if bot else ""
+        reply_to = getattr(message, "reply_to_message", None)
+        reply_user = getattr(reply_to, "from_user", None) if reply_to else None
+        reply_user_id = str(getattr(reply_user, "id", "")) if reply_user else ""
+        if bot_id and reply_user_id and reply_user_id == bot_id:
+            return True
+
+        return False
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -1325,7 +1374,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
 
-        event = self._build_message_event(update.message, MessageType.TEXT)
+        message = update.message
+        chat = getattr(message, "chat", None)
+        is_group = bool(chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP))
+        cleaned_text = message.text
+        if is_group and self._require_mention_enabled():
+            if not self._message_mentions_bot(message):
+                logger.debug("[Telegram] Skipping group message without required mention/prefix")
+                return
+            cleaned_text = self._strip_leading_mention(message.text)
+
+        event = self._build_message_event(message, MessageType.TEXT)
+        event.text = cleaned_text
         self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1483,8 +1543,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
-        
+
         msg = update.message
+        chat = getattr(msg, "chat", None)
+        is_group = bool(chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP))
+        if is_group and self._require_mention_enabled():
+            if not self._message_mentions_bot(msg):
+                logger.debug("[Telegram] Skipping group media without required mention/prefix")
+                return
         
         # Determine media type
         if msg.sticker:
@@ -1506,7 +1572,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Add caption as text
         if msg.caption:
-            event.text = msg.caption
+            event.text = self._strip_leading_mention(msg.caption) if is_group and self._require_mention_enabled() else msg.caption
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
