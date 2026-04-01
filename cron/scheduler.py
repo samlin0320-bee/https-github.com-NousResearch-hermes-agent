@@ -252,6 +252,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
+        "livekit": Platform.LIVEKIT,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,

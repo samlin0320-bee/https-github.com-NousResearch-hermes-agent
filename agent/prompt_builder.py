@@ -382,6 +382,13 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "livekit": (
+        "You are communicating via a LiveKit voice channel (WebRTC). "
+        "The user speaks to you and hears your replies as audio. "
+        "Keep responses concise and conversational — they will be read aloud via TTS. "
+        "Avoid markdown formatting, long lists, code blocks, or URLs. "
+        "Do not include MEDIA: tags. Focus on clear, spoken-word responses."
+    ),
 }
 
 # ---------------------------------------------------------------------------
