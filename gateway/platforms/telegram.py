@@ -887,19 +887,14 @@ class TelegramAdapter(BasePlatformAdapter):
             if "not modified" in err_str:
                 return SendResult(success=True, message_id=message_id)
             # Message too long — content exceeded 4096 chars (e.g. during
-            # streaming).  Truncate and succeed so the stream consumer can
-            # split the overflow into a new message instead of dying.
+            # streaming). Return failure so the stream consumer can split the
+            # overflow into a new message instead of silently truncating.
             if "message_too_long" in err_str or "too long" in err_str:
-                truncated = content[: self.MAX_MESSAGE_LENGTH - 20] + "…"
-                try:
-                    await self._bot.edit_message_text(
-                        chat_id=int(chat_id),
-                        message_id=int(message_id),
-                        text=truncated,
-                    )
-                except Exception:
-                    pass  # best-effort truncation
-                return SendResult(success=True, message_id=message_id)
+                logger.warning(
+                    "[%s] Message too long for edit (%d chars), signaling stream consumer to split",
+                    self.name, len(content)
+                )
+                return SendResult(success=False, error="message_too_long")
             # Flood control / RetryAfter — back off and retry once
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:

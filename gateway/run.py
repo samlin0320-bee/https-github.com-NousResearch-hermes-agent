@@ -6121,7 +6121,28 @@ class GatewayRunner:
         _sc = stream_consumer_holder[0]
         if _sc and _sc.already_sent and isinstance(response, dict):
             response["already_sent"] = True
-        
+
+        # Handle undelivered text from failed mid-stream sends
+        # This can happen when sending to threads/topics hits rate limits
+        if _sc and hasattr(_sc, "has_undelivered_text") and _sc.has_undelivered_text:
+            remaining = _sc.get_remaining_text()
+            if remaining:
+                logger.warning(
+                    "Delivering %d chars of undelivered streaming content to %s",
+                    len(remaining), source.chat_id
+                )
+                try:
+                    _meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    await adapter.send(
+                        source.chat_id,
+                        remaining,
+                        metadata=_meta,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to deliver remaining streaming content: %s", e
+                    )
+
         return response
 
 
