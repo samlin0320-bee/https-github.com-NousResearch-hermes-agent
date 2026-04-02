@@ -430,6 +430,61 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
 
+    # Structured post-task learning review — stage candidate learnings locally
+    # without changing durable memory/skills by default.
+    "auto_learning": {
+        "enabled": False,
+        "review_interval": 10,
+        "min_tool_iterations": 4,
+        "candidate_char_limit": 12000,
+        "candidate_max_entries": 200,
+        "promotion_threshold": 0.80,
+        "auto_promote_memory": True,
+        "auto_promote_skills": False,
+        "store_path": "",          # empty = default path under HERMES_HOME
+        "debug": False,
+        "reviewer": {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 0,    # 0 = use reviewer default/fallback
+            "timeout": 0,           # 0 = unset/reserved for future use
+        },
+        "verifier": {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 0,
+            "timeout": 0,
+        },
+        "proposer": {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 0,
+            "timeout": 0,
+        },
+        "critic": {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 0,
+            "timeout": 0,
+        },
+        "promoter": {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 0,
+            "timeout": 0,
+        },
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

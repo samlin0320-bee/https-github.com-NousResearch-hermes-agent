@@ -1148,8 +1148,41 @@ class AIAgent:
         except Exception:
             pass
 
-        # Tool-use enforcement config: "auto" (default — matches hardcoded
-        # model list), true (always), false (never), or list of substrings.
+        # Auto-learning loop — stage candidate learnings locally and optionally
+        # promote high-confidence ones through existing memory/skill write paths.
+        self._auto_learning_enabled = False
+        self._auto_learning_config = {}
+        self._auto_learning_reviewer_config = {}
+        self._auto_learning_verifier_config = {}
+        self._auto_learning_proposer_config = {}
+        self._auto_learning_critic_config = {}
+        self._auto_learning_promoter_config = {}
+        self._auto_learning_store = None
+        self._turns_since_auto_learning = 0
+        try:
+            auto_learning_config = _agent_cfg.get("auto_learning", {}) or {}
+            self._auto_learning_config = dict(auto_learning_config)
+            self._auto_learning_reviewer_config = dict(auto_learning_config.get("reviewer") or {})
+            self._auto_learning_verifier_config = dict(auto_learning_config.get("verifier") or {})
+            self._auto_learning_proposer_config = dict(auto_learning_config.get("proposer") or {})
+            self._auto_learning_critic_config = dict(auto_learning_config.get("critic") or {})
+            self._auto_learning_promoter_config = dict(auto_learning_config.get("promoter") or {})
+            self._auto_learning_enabled = bool(auto_learning_config.get("enabled", False))
+            if self._auto_learning_enabled:
+                from tools.auto_learning_store import AutoLearningStore
+
+                store_path = auto_learning_config.get("store_path") or None
+                max_entries = int(auto_learning_config.get("candidate_max_entries", 200))
+                self._auto_learning_store = AutoLearningStore(
+                    path=Path(store_path) if store_path else None,
+                    max_entries=max_entries,
+                )
+        except Exception:
+            self._auto_learning_enabled = False
+            self._auto_learning_store = None
+
+        # Context compression settings
+
         _agent_section = _agent_cfg.get("agent", {})
         if not isinstance(_agent_section, dict):
             _agent_section = {}
@@ -1584,6 +1617,875 @@ class AIAgent:
         "Only act if there's something genuinely worth saving. "
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
+
+    @staticmethod
+    def _slice_auto_learning_turn(messages_snapshot: List[Dict]) -> List[Dict]:
+        if not messages_snapshot:
+            return []
+        for index in range(len(messages_snapshot) - 1, -1, -1):
+            message = messages_snapshot[index]
+            if isinstance(message, dict) and str(message.get("role") or "").strip() == "user":
+                return list(messages_snapshot[index:])
+        return list(messages_snapshot)
+
+    @staticmethod
+    def _message_text_for_auto_learning(message: Dict[str, Any]) -> str:
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        if isinstance(content, str):
+            return " ".join(content.split()).strip()
+        if isinstance(content, list):
+            text_chunks = []
+            for chunk in content:
+                if not isinstance(chunk, dict):
+                    continue
+                text_value = chunk.get("text") or chunk.get("content")
+                if isinstance(text_value, str) and text_value.strip():
+                    text_chunks.append(" ".join(text_value.split()).strip())
+            return " ".join(text_chunks).strip()
+        return ""
+
+    def _auto_learning_has_explicit_user_correction(self, messages_snapshot: List[Dict]) -> bool:
+        recent_messages = self._slice_auto_learning_turn(messages_snapshot)
+        user_text = ""
+        for message in reversed(recent_messages):
+            if isinstance(message, dict) and str(message.get("role") or "").strip() == "user":
+                user_text = self._message_text_for_auto_learning(message).lower()
+                break
+        if not user_text:
+            return False
+
+        correction_phrases = (
+            "not what i asked",
+            "that's wrong",
+            "that is wrong",
+            "incorrect",
+            "i asked for",
+            "i meant",
+            "please correct",
+            "please fix",
+        )
+        if any(phrase in user_text for phrase in correction_phrases):
+            return True
+        return "use " in user_text and " instead" in user_text
+
+    def _collect_auto_learning_hook_metrics(self, messages_snapshot: List[Dict]) -> Dict[str, int]:
+        recent_messages = self._slice_auto_learning_turn(messages_snapshot)
+        tool_call_names_by_id: Dict[str, str] = {}
+        tool_call_count = 0
+        failed_tool_call_count = 0
+        delegated_task_count = 0
+
+        for message in recent_messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip()
+            if role == "assistant":
+                tool_calls = message.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                tool_call_count += len(tool_calls)
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_call_id = str(tool_call.get("id") or "").strip()
+                    function = tool_call.get("function") or {}
+                    tool_name = str(function.get("name") or "").strip() or "unknown"
+                    if tool_call_id:
+                        tool_call_names_by_id[tool_call_id] = tool_name
+                    if tool_name == "delegate_task":
+                        delegated_task_count += 1
+            elif role == "tool":
+                tool_call_id = str(message.get("tool_call_id") or "").strip()
+                tool_name = tool_call_names_by_id.get(tool_call_id, "unknown")
+                tool_result = message.get("content")
+                if not isinstance(tool_result, str):
+                    try:
+                        tool_result = json.dumps(tool_result, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        tool_result = str(tool_result)
+                is_failure, _ = _detect_tool_failure(tool_name, tool_result)
+                if tool_name == "delegate_task" and is_failure:
+                    try:
+                        parsed_delegate = json.loads(tool_result)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed_delegate = None
+                    if isinstance(parsed_delegate, dict):
+                        child_results = parsed_delegate.get("results")
+                        if isinstance(child_results, list) and child_results:
+                            if any(
+                                isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "completed"
+                                for item in child_results
+                            ):
+                                is_failure = False
+                if is_failure:
+                    failed_tool_call_count += 1
+
+        return {
+            "tool_call_count": tool_call_count,
+            "failed_tool_call_count": failed_tool_call_count,
+            "delegated_task_count": delegated_task_count,
+        }
+
+    def _collect_auto_learning_hook_signals(self, messages_snapshot: List[Dict]) -> List[str]:
+        signals: List[str] = []
+        metrics = self._collect_auto_learning_hook_metrics(messages_snapshot)
+        min_tool_iterations = int(self._auto_learning_config.get("min_tool_iterations", 4) or 0)
+
+        if self._auto_learning_has_explicit_user_correction(messages_snapshot):
+            signals.append("explicit_user_correction")
+        if metrics["failed_tool_call_count"] > 0:
+            signals.append("failure_recovery")
+        if metrics["delegated_task_count"] > 0:
+            signals.append("delegated_completion")
+        if self._iters_since_skill >= min_tool_iterations:
+            signals.append("tool_heavy_success")
+        return signals
+
+    def _select_auto_learning_hook_reason(self, messages_snapshot: List[Dict]) -> Optional[str]:
+        signals = self._collect_auto_learning_hook_signals(messages_snapshot)
+        return signals[0] if signals else None
+
+    def _should_run_auto_learning_review(self, messages_snapshot: List[Dict]) -> Optional[str]:
+        if not (self._auto_learning_enabled and self._auto_learning_store):
+            return None
+        review_interval = int(self._auto_learning_config.get("review_interval", 10) or 0)
+        if review_interval <= 0:
+            review_interval = 1
+        self._turns_since_auto_learning += 1
+        hook_reason = self._select_auto_learning_hook_reason(messages_snapshot)
+        if not hook_reason:
+            return None
+        if self._turns_since_auto_learning < review_interval:
+            return None
+        self._turns_since_auto_learning = 0
+        return hook_reason
+
+    def _resolve_auto_learning_actor_settings(self, actor: str) -> Dict[str, Any]:
+        """Resolve routing/settings for auto-learning side actors.
+
+        Model/provider/base_url/api_key inherit from the main agent unless the
+        actor block explicitly overrides them. For a configured provider, use
+        the same runtime provider resolver as Hermes CLI/gateway startup so the
+        side actor can switch providers cleanly.
+
+        ``max_iterations`` stays conservative for the reviewer path: when unset,
+        we preserve the existing 4-turn background review budget instead of
+        inheriting the parent's full conversation budget.
+        """
+        actor_name = str(actor or "").strip().lower()
+        if actor_name == "reviewer":
+            actor_cfg = dict(self._auto_learning_reviewer_config or {})
+            default_max_iterations = 4
+        elif actor_name == "verifier":
+            actor_cfg = dict(self._auto_learning_verifier_config or {})
+            default_max_iterations = 4
+        elif actor_name == "proposer":
+            actor_cfg = dict(self._auto_learning_proposer_config or {})
+            default_max_iterations = 4
+        elif actor_name == "critic":
+            actor_cfg = dict(self._auto_learning_critic_config or {})
+            default_max_iterations = 4
+        elif actor_name == "promoter":
+            actor_cfg = dict(self._auto_learning_promoter_config or {})
+            default_max_iterations = 4
+        else:
+            raise ValueError(f"Unknown auto-learning actor: {actor}")
+
+        resolved = {
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "api_key": getattr(self, "api_key", None),
+            "api_mode": getattr(self, "api_mode", None),
+            "max_iterations": default_max_iterations,
+            "timeout": None,
+        }
+
+        configured_model = str(actor_cfg.get("model") or "").strip() or None
+        configured_provider = str(actor_cfg.get("provider") or "").strip() or None
+        configured_base_url = str(actor_cfg.get("base_url") or "").strip() or None
+        configured_api_key = str(actor_cfg.get("api_key") or "").strip() or None
+
+        raw_max_iterations = actor_cfg.get("max_iterations")
+        if raw_max_iterations not in (None, "", 0, "0"):
+            try:
+                resolved["max_iterations"] = max(1, int(raw_max_iterations))
+            except (TypeError, ValueError):
+                pass
+
+        raw_timeout = actor_cfg.get("timeout")
+        if raw_timeout not in (None, "", 0, "0"):
+            try:
+                resolved["timeout"] = max(1.0, float(raw_timeout))
+            except (TypeError, ValueError):
+                pass
+
+        if configured_model:
+            resolved["model"] = configured_model
+
+        if configured_base_url:
+            api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                raise ValueError(
+                    f"auto_learning.{actor_name}.base_url is configured but no API key was found. "
+                    f"Set auto_learning.{actor_name}.api_key or OPENAI_API_KEY."
+                )
+
+            base_lower = configured_base_url.lower()
+            provider = "custom"
+            api_mode = "chat_completions"
+            if "chatgpt.com/backend-api/codex" in base_lower:
+                provider = "openai-codex"
+                api_mode = "codex_responses"
+            elif "api.anthropic.com" in base_lower:
+                provider = "anthropic"
+                api_mode = "anthropic_messages"
+
+            resolved.update(
+                provider=provider,
+                base_url=configured_base_url,
+                api_key=api_key,
+                api_mode=api_mode,
+            )
+            return resolved
+
+        if not configured_provider:
+            return resolved
+
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(requested=configured_provider)
+        except Exception as exc:
+            raise ValueError(
+                f"Cannot resolve auto-learning {actor_name} provider '{configured_provider}': {exc}. "
+                f"Check that the provider is configured, or set auto_learning.{actor_name}.base_url/"
+                f"auto_learning.{actor_name}.api_key for a direct endpoint."
+            ) from exc
+
+        api_key = runtime.get("api_key", "")
+        if not api_key:
+            raise ValueError(
+                f"Auto-learning {actor_name} provider '{configured_provider}' resolved but has no API key. "
+                f"Set the appropriate environment variable or run 'hermes login'."
+            )
+
+        resolved.update(
+            provider=runtime.get("provider") or configured_provider,
+            base_url=runtime.get("base_url") or self.base_url,
+            api_key=api_key,
+            api_mode=runtime.get("api_mode") or getattr(self, "api_mode", None),
+        )
+        return resolved
+
+    def _get_durable_auto_learning_entries(self, candidate: Dict[str, Any]) -> List[str]:
+        target = str(candidate.get("target") or "").strip().lower()
+        if not self._memory_store:
+            return []
+        if target == "user":
+            return list(getattr(self._memory_store, "user_entries", []) or [])
+        return list(getattr(self._memory_store, "memory_entries", []) or [])
+
+    def _validate_auto_learning_skill_candidate(self, candidate: Dict[str, Any]) -> Dict[str, Any] | None:
+        if str(candidate.get("category") or "").strip().lower() != "skill":
+            return None
+        payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        action = str(payload.get("action") or "").strip().lower()
+        target_name = str(candidate.get("target") or payload.get("name") or "").strip()
+        if action not in {"create", "patch", "edit"}:
+            return None
+        if not target_name:
+            return {
+                "valid": False,
+                "action": action,
+                "name": target_name,
+                "error": "Skill target name is required for replay validation.",
+                "fatal": True,
+            }
+        try:
+            from tools.skill_manager_tool import replay_validate_skill_candidate
+
+            return replay_validate_skill_candidate(
+                action=action,
+                name=target_name,
+                content=payload.get("content"),
+                category=payload.get("category"),
+                file_path=payload.get("file_path"),
+                file_content=payload.get("file_content"),
+                old_string=payload.get("old_string"),
+                new_string=payload.get("new_string"),
+                replace_all=bool(payload.get("replace_all", False)),
+            )
+        except Exception as exc:
+            return {
+                "valid": False,
+                "action": action,
+                "name": target_name,
+                "error": f"Replay validation unavailable: {exc}",
+            }
+
+    def _assess_auto_learning_candidate_quality(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        from agent.auto_learning import candidate_semantic_key, detect_candidate_contradictions
+
+        durable_entries = self._get_durable_auto_learning_entries(candidate)
+        staged_candidates = []
+        if self._auto_learning_store:
+            staged_candidates = [
+                item for item in self._auto_learning_store.list_candidates()
+                if item.get("status") in {"candidate", "manual_review", "promoted"}
+            ]
+
+        contradictions = detect_candidate_contradictions(
+            candidate,
+            durable_entries=durable_entries,
+            staged_candidates=staged_candidates,
+        )
+        review_required = bool(contradictions.get("review_required"))
+        shadow_decision = "manual_review" if contradictions.get("has_contradiction") else "candidate"
+
+        quality = {
+            "semantic_key": candidate_semantic_key(candidate),
+            "contradictions": contradictions,
+            "review_required": review_required,
+            "shadow_decision": shadow_decision,
+        }
+
+        threshold = float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80)
+        if (
+            self._auto_learning_config.get("auto_promote_skills", False)
+            and not review_required
+            and str(candidate.get("category") or "").strip().lower() == "skill"
+        ):
+            from agent.auto_learning import should_promote_candidate
+
+            if should_promote_candidate(candidate, threshold):
+                skill_validation = self._validate_auto_learning_skill_candidate(candidate)
+                if skill_validation is not None:
+                    quality["skill_validation"] = skill_validation
+                    if not skill_validation.get("valid"):
+                        quality["review_required"] = True
+                        quality["shadow_decision"] = "rejected" if skill_validation.get("fatal") else "manual_review"
+
+        return quality
+
+    def _build_auto_learning_promotion_notification(self, entry: Dict[str, Any]) -> str | None:
+        category = str(entry.get("category") or "").strip().lower()
+        summary = " ".join(str(entry.get("summary") or "").split()).strip()
+        target = str(entry.get("target") or "").strip()
+        if category == "memory":
+            label = "Memory upgraded"
+            detail = summary or target or "durable memory"
+        elif category == "skill":
+            label = "Skill upgraded"
+            detail = target or summary or "skill"
+        else:
+            return None
+        return f"💾 {label}: {detail}"
+
+    def _emit_auto_learning_promotion_notification(self, entry: Dict[str, Any]) -> None:
+        notification = self._build_auto_learning_promotion_notification(entry)
+        if not notification:
+            return
+        self._safe_print(f"  {notification}")
+        callback = self.background_review_callback
+        if callback:
+            try:
+                callback(notification)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _status_from_auto_learning_write_result(result_text: str) -> str:
+        try:
+            result = json.loads(result_text)
+        except (TypeError, json.JSONDecodeError):
+            return "rejected"
+        if not result.get("success"):
+            return "rejected"
+        message = str(result.get("message", "")).lower()
+        return "superseded" if "already exists" in message else "promoted"
+
+    def _promote_auto_learning_candidate(self, entry: Dict[str, Any]) -> str:
+        category = entry.get("category", "unknown")
+        payload = entry.get("payload") or {}
+        evidence = entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {}
+        quality = evidence.get("quality") if isinstance(evidence.get("quality"), dict) else {}
+        threshold = float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80)
+        from agent.auto_learning import should_promote_candidate
+
+        if quality.get("review_required"):
+            return "manual_review"
+
+        if not should_promote_candidate(entry, threshold):
+            return entry.get("status") or "candidate"
+
+        if category == "memory" and self._auto_learning_config.get("auto_promote_memory", True):
+            from tools.memory_tool import memory_tool as _memory_tool
+            target = entry.get("target") or "memory"
+            action = payload.get("action")
+            if action not in {"add", "replace", "remove"}:
+                return "rejected"
+            status = self._status_from_auto_learning_write_result(
+                _memory_tool(
+                    action=action,
+                    target=target,
+                    content=payload.get("content"),
+                    old_text=payload.get("old_text"),
+                    store=self._memory_store,
+                )
+            )
+            if status == "promoted":
+                self._emit_auto_learning_promotion_notification(entry)
+            return status
+
+        if category == "skill" and self._auto_learning_config.get("auto_promote_skills", False):
+            skill_validation = quality.get("skill_validation") if isinstance(quality.get("skill_validation"), dict) else None
+            action = payload.get("action")
+            from tools.skill_manager_tool import skill_manage as _skill_manage
+            target_name = entry.get("target") or payload.get("name") or ""
+            if action not in {"create", "patch", "edit", "delete", "write_file", "remove_file"} or not target_name:
+                return "rejected"
+            if skill_validation and not skill_validation.get("valid") and action in {"create", "patch", "edit"}:
+                return "manual_review"
+            status = self._status_from_auto_learning_write_result(
+                _skill_manage(
+                    action=action,
+                    name=target_name,
+                    content=payload.get("content"),
+                    category=payload.get("category"),
+                    file_path=payload.get("file_path"),
+                    file_content=payload.get("file_content"),
+                    old_string=payload.get("old_string"),
+                    new_string=payload.get("new_string"),
+                    replace_all=bool(payload.get("replace_all", False)),
+                )
+            )
+            if status == "promoted":
+                self._emit_auto_learning_promotion_notification(entry)
+            return status
+
+        return entry.get("status") or "candidate"
+
+    @staticmethod
+    def _build_auto_learning_transcript_excerpt(messages_snapshot: List[Dict], max_messages: int = 4, max_chars: int = 800) -> str:
+        excerpt_parts: List[str] = []
+        for message in messages_snapshot[-max_messages:]:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip() or "unknown"
+            content = message.get("content")
+            if isinstance(content, str):
+                text = " ".join(content.split()).strip()
+            elif isinstance(content, list):
+                text_chunks = []
+                for chunk in content:
+                    if isinstance(chunk, dict):
+                        text_value = chunk.get("text") or chunk.get("content")
+                        if isinstance(text_value, str) and text_value.strip():
+                            text_chunks.append(" ".join(text_value.split()).strip())
+                text = " ".join(text_chunks).strip()
+            else:
+                text = ""
+            if not text:
+                continue
+            excerpt_parts.append(f"{role}: {text}")
+        return "\n".join(excerpt_parts)[:max_chars]
+
+    def _build_auto_learning_review_context(
+        self,
+        messages_snapshot: List[Dict],
+        *,
+        hook_reason: str,
+        reviewer_settings: Dict[str, Any],
+        source_actor: str = "reviewer",
+        include_transcript_details: bool = True,
+    ) -> Dict[str, Any]:
+        recent_messages = self._slice_auto_learning_turn(messages_snapshot)
+
+        hook_signals = self._collect_auto_learning_hook_signals(recent_messages)
+        if hook_reason:
+            hook_signals = [hook_reason] + [signal for signal in hook_signals if signal != hook_reason]
+        hook_metrics = self._collect_auto_learning_hook_metrics(recent_messages)
+
+        review_context = {
+            "hook_reason": str(hook_reason or "").strip() or "tool_heavy_success",
+            "hook_signals": hook_signals or [str(hook_reason or "tool_heavy_success")],
+            "source": {
+                "trigger": "post_response_review",
+                "actor": str(source_actor or "reviewer").strip() or "reviewer",
+                "model": reviewer_settings.get("model") or self.model,
+                "provider": reviewer_settings.get("provider") or self.provider,
+            },
+            "metrics": {
+                "iteration_count": max(0, int(getattr(self, "_iters_since_skill", 0) or 0)),
+                "tool_call_count": hook_metrics["tool_call_count"],
+                "failed_tool_call_count": hook_metrics["failed_tool_call_count"],
+                "delegated_task_count": hook_metrics["delegated_task_count"],
+            },
+        }
+
+        if include_transcript_details:
+            transcript_refs = []
+            for index, message in enumerate(recent_messages):
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "").strip() or "unknown"
+                if role in {"user", "assistant", "tool"}:
+                    transcript_refs.append({"message_index": index, "role": role})
+            review_context["transcript_refs"] = transcript_refs[-6:]
+            review_context["transcript_excerpt"] = self._build_auto_learning_transcript_excerpt(recent_messages)
+
+        return review_context
+
+    def _build_auto_learning_candidate_evidence(
+        self,
+        candidate: Dict[str, Any],
+        *,
+        review_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        evidence = {"candidate_reason": candidate.get("reason", "")}
+        if isinstance(review_context, dict):
+            hook_reason = str(review_context.get("hook_reason") or "").strip()
+            if hook_reason:
+                evidence["hook_reason"] = hook_reason
+            hook_signals = review_context.get("hook_signals")
+            if isinstance(hook_signals, list) and hook_signals:
+                evidence["hook_signals"] = [str(signal).strip() for signal in hook_signals if str(signal).strip()]
+            source = review_context.get("source")
+            if isinstance(source, dict) and source:
+                evidence["source"] = dict(source)
+            metrics = review_context.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                evidence["metrics"] = dict(metrics)
+            transcript_refs = review_context.get("transcript_refs")
+            if isinstance(transcript_refs, list) and transcript_refs:
+                evidence["transcript_refs"] = [dict(ref) for ref in transcript_refs if isinstance(ref, dict)]
+            transcript_excerpt = str(review_context.get("transcript_excerpt") or "").strip()
+            if transcript_excerpt:
+                evidence["transcript_excerpt"] = transcript_excerpt
+
+        verifier = candidate.get("verifier")
+        if isinstance(verifier, dict) and verifier:
+            evidence["verifier"] = dict(verifier)
+        critic = candidate.get("critic")
+        if isinstance(critic, dict) and critic:
+            evidence["critic"] = dict(critic)
+        promoter = candidate.get("promoter")
+        if isinstance(promoter, dict) and promoter:
+            evidence["promoter"] = dict(promoter)
+        quality = candidate.get("quality")
+        if isinstance(quality, dict) and quality:
+            evidence["quality"] = dict(quality)
+        return evidence
+
+    def _auto_learning_actor_is_configured(self, actor: str) -> bool:
+        actor_name = str(actor or "").strip().lower()
+        actor_cfg_map = {
+            "reviewer": self._auto_learning_reviewer_config,
+            "verifier": self._auto_learning_verifier_config,
+            "proposer": self._auto_learning_proposer_config,
+            "critic": self._auto_learning_critic_config,
+            "promoter": self._auto_learning_promoter_config,
+        }
+        cfg = dict(actor_cfg_map.get(actor_name) or {})
+        for key in ("model", "provider", "base_url", "api_key"):
+            if str(cfg.get(key) or "").strip():
+                return True
+        for key in ("max_iterations", "timeout"):
+            raw_value = cfg.get(key)
+            if raw_value in (None, "", 0, "0"):
+                continue
+            try:
+                if float(raw_value) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _auto_learning_verifier_is_configured(self) -> bool:
+        return self._auto_learning_actor_is_configured("verifier")
+
+    def _apply_auto_learning_verifier_decision(
+        self,
+        candidate: Dict[str, Any],
+        decision: Dict[str, Any],
+        *,
+        verifier_settings: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        updated = dict(candidate)
+        try:
+            original_confidence = float(candidate.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            original_confidence = 0.0
+        try:
+            verifier_confidence = float(decision.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            verifier_confidence = 0.0
+
+        updated["confidence"] = max(0.0, min(original_confidence, verifier_confidence))
+        updated["verifier"] = {
+            "disposition": str(decision.get("disposition") or "reject").strip().lower() or "reject",
+            "confidence": updated["confidence"],
+            "reason": str(decision.get("reason") or "").strip(),
+            "model": (verifier_settings or {}).get("model") or self.model,
+            "provider": (verifier_settings or {}).get("provider") or self.provider,
+        }
+        if self._auto_learning_actor_is_configured("critic"):
+            updated["critic"] = dict(updated["verifier"])
+        return updated
+
+    def _run_auto_learning_verifier_pass(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        review_context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not candidates or not self._auto_learning_verifier_is_configured():
+            return candidates
+
+        from agent.auto_learning import (
+            build_auto_learning_verifier_prompt,
+            parse_auto_learning_verifier_review,
+        )
+
+        verifier_settings: Dict[str, Any] = {}
+        verifier_agent = None
+        try:
+            verifier_settings = self._resolve_auto_learning_actor_settings("verifier")
+            verifier_prompt_candidates = []
+            for candidate in candidates:
+                candidate_payload = dict(candidate)
+                if isinstance(review_context, dict) and review_context:
+                    evidence = self._build_auto_learning_candidate_evidence(
+                        candidate,
+                        review_context=review_context,
+                    )
+                    evidence_without_reason = dict(evidence)
+                    evidence_without_reason.pop("candidate_reason", None)
+                    if evidence_without_reason:
+                        candidate_payload["evidence"] = evidence_without_reason
+                verifier_prompt_candidates.append(candidate_payload)
+
+            prompt = build_auto_learning_verifier_prompt(
+                candidates=verifier_prompt_candidates,
+                promotion_threshold=float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80),
+            )
+
+            verifier_agent = AIAgent(
+                model=verifier_settings["model"],
+                max_iterations=verifier_settings["max_iterations"],
+                quiet_mode=True,
+                platform=self.platform,
+                provider=verifier_settings.get("provider"),
+                base_url=verifier_settings.get("base_url"),
+                api_key=verifier_settings.get("api_key"),
+                api_mode=verifier_settings.get("api_mode"),
+                skip_memory=True,
+            )
+            verifier_agent._memory_store = self._memory_store
+            verifier_agent._auto_learning_enabled = False
+            result = verifier_agent.run_conversation(user_message=prompt)
+            verifier_text = (result or {}).get("final_response", "") if isinstance(result, dict) else ""
+            decisions = parse_auto_learning_verifier_review(verifier_text)
+            decision_map = {decision["index"]: decision for decision in decisions}
+
+            verified_candidates = []
+            for index, candidate in enumerate(candidates):
+                decision = decision_map.get(index) or {
+                    "index": index,
+                    "disposition": "reject",
+                    "confidence": 0.0,
+                    "reason": "Verifier returned no usable decision.",
+                }
+                verified_candidates.append(
+                    self._apply_auto_learning_verifier_decision(
+                        candidate,
+                        decision,
+                        verifier_settings=verifier_settings,
+                    )
+                )
+            return verified_candidates
+        except Exception as exc:
+            logger.debug("Auto-learning verifier failed: %s", exc)
+            return [
+                self._apply_auto_learning_verifier_decision(
+                    candidate,
+                    {
+                        "index": index,
+                        "disposition": "reject",
+                        "confidence": 0.0,
+                        "reason": "Verifier unavailable.",
+                    },
+                    verifier_settings=verifier_settings,
+                )
+                for index, candidate in enumerate(candidates)
+            ]
+        finally:
+            if verifier_agent is not None:
+                client = getattr(verifier_agent, "client", None)
+                if client is not None:
+                    try:
+                        verifier_agent._close_openai_client(client, reason="bg_auto_learning_verify_done", shared=True)
+                        verifier_agent.client = None
+                    except Exception:
+                        pass
+
+    def _process_auto_learning_review_result(
+        self,
+        review_text: str,
+        *,
+        review_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, int]:
+        summary = {"staged": 0, "promoted": 0, "rejected": 0, "superseded": 0, "manual_review": 0}
+        if not self._auto_learning_store:
+            return summary
+
+        from agent.auto_learning import parse_auto_learning_review
+
+        candidates = parse_auto_learning_review(review_text)
+        if not candidates:
+            return summary
+        candidates = self._run_auto_learning_verifier_pass(candidates, review_context=review_context)
+
+        for candidate in candidates:
+            candidate = dict(candidate)
+            verifier_disposition = str(((candidate.get("verifier") or {}).get("disposition") or "")).strip().lower()
+            quality = None
+            if verifier_disposition != "reject":
+                quality = self._assess_auto_learning_candidate_quality(candidate)
+                candidate["quality"] = quality
+            evidence = self._build_auto_learning_candidate_evidence(candidate, review_context=review_context)
+
+            entry = self._auto_learning_store.add_candidate(
+                category=candidate.get("category", "unknown"),
+                summary=candidate.get("summary", ""),
+                confidence=candidate.get("confidence", 0.0),
+                evidence=evidence,
+                action=(candidate.get("payload") or {}).get("action"),
+                target=candidate.get("target") or None,
+                payload=candidate.get("payload") or {},
+            )
+            previous_status = str(entry.get("status") or "candidate")
+            summary["staged"] += 1
+            if previous_status == "superseded":
+                new_status = "superseded"
+            elif verifier_disposition == "reject":
+                new_status = "rejected"
+            elif (quality or {}).get("review_required"):
+                new_status = (quality or {}).get("shadow_decision") or "manual_review"
+            else:
+                new_status = self._promote_auto_learning_candidate(entry)
+
+            if new_status != entry.get("status"):
+                entry = self._auto_learning_store.mark_status(entry["id"], new_status)
+            quality = dict(quality or {})
+            quality["shadow_decision"] = new_status if new_status in {"manual_review", "promoted", "rejected", "superseded"} else quality.get("shadow_decision", "candidate")
+            evidence = dict(entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {})
+            quality_payload = dict(quality)
+            if set(quality_payload.keys()) == {"shadow_decision"}:
+                quality_payload = {}
+            if quality_payload:
+                evidence["quality"] = quality_payload
+            if new_status == "promoted" and self._auto_learning_actor_is_configured("promoter"):
+                existing_promoter = evidence.get("promoter") if isinstance(evidence.get("promoter"), dict) else {}
+                if str(existing_promoter.get("disposition") or "").strip().lower() != "promote":
+                    try:
+                        promoter_settings = self._resolve_auto_learning_actor_settings("promoter")
+                    except Exception:
+                        promoter_settings = {}
+                    evidence["promoter"] = {
+                        "disposition": "promote",
+                        "model": promoter_settings.get("model") or self.model,
+                        "provider": promoter_settings.get("provider") or self.provider,
+                    }
+            current_evidence = entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {}
+            if evidence != current_evidence:
+                entry = self._auto_learning_store.update_candidate(entry["id"], evidence=evidence)
+            if entry.get("supersedes") and new_status != "superseded":
+                summary["superseded"] += 1
+            if new_status in {"promoted", "rejected", "superseded", "manual_review"}:
+                summary[new_status] += 1
+        return summary
+
+    def _spawn_auto_learning_review(self, messages_snapshot: List[Dict], *, hook_reason: str = "tool_heavy_success") -> None:
+        if not self._auto_learning_store:
+            return
+
+        allow_memory = "memory" in self.valid_tool_names
+        allow_skills = "skill_manage" in self.valid_tool_names
+        if not allow_memory and not allow_skills:
+            return
+
+        from agent.auto_learning import build_auto_learning_review_prompt
+
+        prompt = build_auto_learning_review_prompt(
+            allow_memory=allow_memory,
+            allow_skills=allow_skills,
+            min_tool_iterations=int(self._auto_learning_config.get("min_tool_iterations", 4) or 4),
+            promotion_threshold=float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80),
+        )
+
+        review_actor = "proposer" if self._auto_learning_actor_is_configured("proposer") else "reviewer"
+        try:
+            reviewer_settings = self._resolve_auto_learning_actor_settings(review_actor)
+        except Exception as exc:
+            logger.debug("Auto-learning %s routing resolution failed: %s", review_actor, exc)
+            return
+
+        review_context = self._build_auto_learning_review_context(
+            messages_snapshot,
+            hook_reason=hook_reason,
+            reviewer_settings=reviewer_settings,
+            source_actor=review_actor,
+            include_transcript_details=bool(
+                self._auto_learning_config.get("auto_promote_memory", True)
+                or self._auto_learning_config.get("auto_promote_skills", False)
+            ),
+        )
+
+        def _run_review():
+            review_agent = None
+            try:
+                import contextlib, os as _os
+                with open(_os.devnull, "w") as _devnull, \
+                     contextlib.redirect_stdout(_devnull), \
+                     contextlib.redirect_stderr(_devnull):
+                    review_agent = AIAgent(
+                        model=reviewer_settings["model"],
+                        max_iterations=reviewer_settings["max_iterations"],
+                        quiet_mode=True,
+                        platform=self.platform,
+                        provider=reviewer_settings.get("provider"),
+                        base_url=reviewer_settings.get("base_url"),
+                        api_key=reviewer_settings.get("api_key"),
+                        api_mode=reviewer_settings.get("api_mode"),
+                        skip_memory=True,
+                    )
+                    review_agent._memory_store = self._memory_store
+                    review_agent._auto_learning_enabled = False
+                    result = review_agent.run_conversation(
+                        user_message=prompt,
+                        conversation_history=messages_snapshot,
+                    )
+                review_text = (result or {}).get("final_response", "") if isinstance(result, dict) else ""
+                if review_text:
+                    self._process_auto_learning_review_result(review_text, review_context=review_context)
+            except Exception as e:
+                logger.debug("Background auto-learning review failed: %s", e)
+            finally:
+                if review_agent is not None:
+                    client = getattr(review_agent, "client", None)
+                    if client is not None:
+                        try:
+                            review_agent._close_openai_client(client, reason="bg_auto_learning_done", shared=True)
+                            review_agent.client = None
+                        except Exception:
+                            pass
+
+        t = threading.Thread(target=_run_review, daemon=True, name="bg-auto-learning-review")
+        t.start()
 
     def _spawn_background_review(
         self,
@@ -8476,6 +9378,13 @@ class AIAgent:
             _should_review_skills = True
             self._iters_since_skill = 0
 
+        _auto_learning_hook_reason = None
+        try:
+            if final_response and not interrupted:
+                _auto_learning_hook_reason = self._should_run_auto_learning_review(list(messages))
+        except Exception:
+            _auto_learning_hook_reason = None
+
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
@@ -8484,6 +9393,15 @@ class AIAgent:
                     messages_snapshot=list(messages),
                     review_memory=_should_review_memory,
                     review_skills=_should_review_skills,
+                )
+            except Exception:
+                pass  # Background review is best-effort
+
+        if final_response and not interrupted and _auto_learning_hook_reason:
+            try:
+                self._spawn_auto_learning_review(
+                    messages_snapshot=list(messages),
+                    hook_reason=_auto_learning_hook_reason,
                 )
             except Exception:
                 pass  # Background review is best-effort

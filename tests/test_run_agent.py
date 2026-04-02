@@ -74,7 +74,27 @@ def agent_with_memory_tool():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
-            api_key="test-k...7890",
+            api_key="***",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        a.client = MagicMock()
+        return a
+
+
+@pytest.fixture()
+def agent_with_memory_and_skills_tools():
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "memory", "skill_manage"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="***",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -3591,3 +3611,1098 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestAutoLearningActorRouting:
+    def _make_agent(self, auto_learning_config, **kwargs):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("memory", "skill_manage")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "memory": {"memory_enabled": False, "user_profile_enabled": False},
+                    "skills": {"creation_nudge_interval": 10},
+                    "auto_learning": auto_learning_config,
+                },
+            ),
+        ):
+            agent = AIAgent(
+                api_key=kwargs.get("api_key", "parent-api-key"),
+                base_url=kwargs.get("base_url", "https://openrouter.ai/api/v1"),
+                provider=kwargs.get("provider", "openrouter"),
+                model=kwargs.get("model", "anthropic/claude-opus-4.6"),
+                max_iterations=kwargs.get("max_iterations", 17),
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            return agent
+
+    def test_auto_learning_actor_configs_loaded_into_agent_state(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "reviewer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 6,
+                    "timeout": 45,
+                },
+                "verifier": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "timeout": 30,
+                },
+                "proposer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 5,
+                },
+                "critic": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "timeout": 20,
+                },
+                "promoter": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "max_iterations": 3,
+                },
+            }
+        )
+
+        assert agent._auto_learning_reviewer_config == {
+            "provider": "openrouter",
+            "model": "google/gemini-3-flash-preview",
+            "max_iterations": 6,
+            "timeout": 45,
+        }
+        assert agent._auto_learning_verifier_config == {
+            "provider": "anthropic",
+            "model": "claude-3-5-haiku-latest",
+            "timeout": 30,
+        }
+        assert agent._auto_learning_proposer_config == {
+            "provider": "openrouter",
+            "model": "google/gemini-3-flash-preview",
+            "max_iterations": 5,
+        }
+        assert agent._auto_learning_critic_config == {
+            "provider": "anthropic",
+            "model": "claude-3-5-haiku-latest",
+            "timeout": 20,
+        }
+        assert agent._auto_learning_promoter_config == {
+            "provider": "anthropic",
+            "model": "claude-3-5-haiku-latest",
+            "max_iterations": 3,
+        }
+
+    def test_auto_learning_actor_resolution_inherits_parent_route_by_default(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "reviewer": {},
+                "verifier": {},
+                "proposer": {},
+                "critic": {},
+                "promoter": {},
+            },
+            api_key="parent-secret",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            model="anthropic/claude-sonnet-4",
+            max_iterations=23,
+        )
+
+        reviewer_resolved = agent._resolve_auto_learning_actor_settings("reviewer")
+        proposer_resolved = agent._resolve_auto_learning_actor_settings("proposer")
+        critic_resolved = agent._resolve_auto_learning_actor_settings("critic")
+        promoter_resolved = agent._resolve_auto_learning_actor_settings("promoter")
+
+        assert reviewer_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert reviewer_resolved["provider"] == "openrouter"
+        assert reviewer_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert reviewer_resolved["api_key"] == "parent-secret"
+        assert reviewer_resolved["max_iterations"] == 4
+        assert reviewer_resolved["timeout"] is None
+
+        assert proposer_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert proposer_resolved["provider"] == "openrouter"
+        assert proposer_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert proposer_resolved["api_key"] == "parent-secret"
+        assert proposer_resolved["max_iterations"] == 4
+        assert proposer_resolved["timeout"] is None
+
+        assert critic_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert critic_resolved["provider"] == "openrouter"
+        assert critic_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert critic_resolved["api_key"] == "parent-secret"
+        assert critic_resolved["max_iterations"] == 4
+        assert critic_resolved["timeout"] is None
+
+        assert promoter_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert promoter_resolved["provider"] == "openrouter"
+        assert promoter_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert promoter_resolved["api_key"] == "parent-secret"
+        assert promoter_resolved["max_iterations"] == 4
+        assert promoter_resolved["timeout"] is None
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_auto_learning_actor_resolution_uses_provider_override(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "reviewer-key",
+            "api_mode": "chat_completions",
+        }
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "reviewer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 6,
+                    "timeout": 45,
+                },
+            }
+        )
+
+        resolved = agent._resolve_auto_learning_actor_settings("reviewer")
+
+        assert resolved == {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "reviewer-key",
+            "api_mode": "chat_completions",
+            "max_iterations": 6,
+            "timeout": 45.0,
+        }
+        mock_resolve.assert_called_once_with(requested="openrouter")
+
+    def test_spawn_auto_learning_review_uses_resolved_proposer_route(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "proposer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "proposer-key",
+                "api_mode": "chat_completions",
+                "max_iterations": 5,
+                "timeout": None,
+            }) as mock_resolve,
+            patch("agent.auto_learning.build_auto_learning_review_prompt", return_value="review prompt"),
+            patch.object(agent, "_process_auto_learning_review_result") as mock_process,
+            patch("run_agent.AIAgent") as mock_child_cls,
+            patch("run_agent.threading.Thread") as mock_thread_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {"final_response": '{"candidates": []}'}
+            mock_child_cls.return_value = mock_child
+
+            def _run_now(*, target=None, **kwargs):
+                thread = MagicMock()
+                thread.start.side_effect = target
+                return thread
+
+            mock_thread_cls.side_effect = _run_now
+
+            agent._spawn_auto_learning_review(
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                hook_reason="tool_heavy_success",
+            )
+
+        mock_resolve.assert_called_once_with("proposer")
+        _, kwargs = mock_child_cls.call_args
+        assert kwargs["model"] == "google/gemini-3-flash-preview"
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["api_key"] == mock_resolve.return_value["api_key"]
+        assert kwargs["api_mode"] == "chat_completions"
+        assert kwargs["max_iterations"] == 5
+        mock_process.assert_called_once()
+        _, review_kwargs = mock_process.call_args
+        review_context = review_kwargs["review_context"]
+        assert review_context["source"]["actor"] == "proposer"
+        assert review_context["source"]["model"] == "google/gemini-3-flash-preview"
+
+    def test_process_auto_learning_review_result_uses_resolved_verifier_route(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "verifier": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "***",
+                "api_mode": "anthropic_messages",
+                "max_iterations": 5,
+                "timeout": None,
+            }) as mock_resolve,
+            patch("agent.auto_learning.build_auto_learning_verifier_prompt", return_value="verify prompt") as mock_prompt,
+            patch("run_agent.AIAgent") as mock_child_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": '{"decisions": [{"index": 0, "disposition": "approve", "confidence": 0.84, "reason": "Evidence supports the reviewer candidate."}]}'
+            }
+            mock_child_cls.return_value = mock_child
+
+            result = agent._process_auto_learning_review_result(
+                '{"candidates": [{"category": "memory", "summary": "User prefers concise responses", "confidence": 0.93, "reason": "Repeated explicit correction", "target": "user", "payload": {"action": "add", "content": "User prefers concise responses."}}]}',
+                review_context={
+                    "hook_reason": "tool_heavy_success",
+                    "source": {
+                        "trigger": "post_response_review",
+                        "actor": "reviewer",
+                        "model": "google/gemini-3-flash-preview",
+                    },
+                    "metrics": {"iteration_count": 3, "tool_call_count": 2},
+                    "transcript_refs": [{"message_index": 0, "role": "user"}],
+                    "transcript_excerpt": "user: Please keep responses concise.",
+                },
+            )
+
+        assert result["staged"] == 1
+        mock_resolve.assert_called_once_with("verifier")
+        prompt_candidates = mock_prompt.call_args.kwargs["candidates"]
+        assert prompt_candidates[0]["summary"] == "User prefers concise responses"
+        assert prompt_candidates[0]["evidence"]["hook_reason"] == "tool_heavy_success"
+        _, kwargs = mock_child_cls.call_args
+        assert kwargs["model"] == "claude-3-5-haiku-latest"
+        assert kwargs["provider"] == "anthropic"
+        assert kwargs["base_url"] == "https://api.anthropic.com"
+        assert kwargs["api_key"] == mock_resolve.return_value["api_key"]
+        assert kwargs["api_mode"] == "anthropic_messages"
+        assert kwargs["max_iterations"] == 5
+
+    def test_process_auto_learning_review_result_skips_verifier_when_review_has_no_candidates(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": True,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "verifier": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with patch.object(agent, "_run_auto_learning_verifier_pass", side_effect=AssertionError("verifier pass should be skipped")):
+            result = agent._process_auto_learning_review_result('{"candidates": []}')
+
+        assert result == {
+            "staged": 0,
+            "promoted": 0,
+            "rejected": 0,
+            "superseded": 0,
+            "manual_review": 0,
+        }
+
+    def test_run_auto_learning_verifier_pass_omits_redundant_candidate_reason_evidence_without_review_context(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": True,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "verifier": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "***",
+                "api_mode": "anthropic_messages",
+                "max_iterations": 5,
+                "timeout": None,
+            }) as mock_resolve,
+            patch("agent.auto_learning.build_auto_learning_verifier_prompt", return_value="verify prompt") as mock_prompt,
+            patch("run_agent.AIAgent") as mock_child_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": '{"decisions": [{"index": 0, "disposition": "downscore", "confidence": 0.41, "reason": "single weak signal"}]}'
+            }
+            mock_child_cls.return_value = mock_child
+
+            agent._run_auto_learning_verifier_pass(
+                [
+                    {
+                        "category": "memory",
+                        "summary": "User prefers concise responses",
+                        "confidence": 0.93,
+                        "reason": "Repeated explicit correction",
+                        "target": "user",
+                        "payload": {"action": "add", "content": "User prefers concise responses."},
+                    }
+                ],
+                review_context=None,
+            )
+
+        mock_resolve.assert_called_once_with("verifier")
+        prompt_candidates = mock_prompt.call_args.kwargs["candidates"]
+        assert "evidence" not in prompt_candidates[0]
+
+    def test_run_auto_learning_verifier_pass_skips_evidence_builder_when_no_contextual_evidence_exists(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": True,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "verifier": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "***",
+                "api_mode": "anthropic_messages",
+                "max_iterations": 5,
+                "timeout": None,
+            }),
+            patch.object(agent, "_build_auto_learning_candidate_evidence") as mock_evidence,
+            patch("agent.auto_learning.build_auto_learning_verifier_prompt", return_value="verify prompt"),
+            patch("run_agent.AIAgent") as mock_child_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": '{"decisions": [{"index": 0, "disposition": "downscore", "confidence": 0.41, "reason": "single weak signal"}]}'
+            }
+            mock_child_cls.return_value = mock_child
+
+            agent._run_auto_learning_verifier_pass(
+                [
+                    {
+                        "category": "memory",
+                        "summary": "User prefers concise responses",
+                        "confidence": 0.93,
+                        "reason": "Repeated explicit correction",
+                        "target": "user",
+                        "payload": {"action": "add", "content": "User prefers concise responses."},
+                    }
+                ],
+                review_context=None,
+            )
+
+        mock_evidence.assert_not_called()
+
+    def test_spawn_auto_learning_review_omits_transcript_excerpt_when_no_durable_targets_are_enabled(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "reviewer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "***",
+                "api_mode": "chat_completions",
+                "max_iterations": 5,
+                "timeout": None,
+            }),
+            patch("agent.auto_learning.build_auto_learning_review_prompt", return_value="review prompt"),
+            patch.object(agent, "_build_auto_learning_transcript_excerpt", side_effect=AssertionError("transcript excerpt should be skipped")),
+            patch.object(agent, "_process_auto_learning_review_result") as mock_process,
+            patch("run_agent.AIAgent") as mock_child_cls,
+            patch("run_agent.threading.Thread") as mock_thread_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {"final_response": '{"candidates": []}'}
+            mock_child_cls.return_value = mock_child
+
+            def _run_now(*, target=None, **kwargs):
+                thread = MagicMock()
+                thread.start.side_effect = target
+                return thread
+
+            mock_thread_cls.side_effect = _run_now
+
+            agent._spawn_auto_learning_review(
+                messages_snapshot=[
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world"},
+                ],
+                hook_reason="tool_heavy_success",
+            )
+
+        mock_process.assert_called_once()
+        _, review_kwargs = mock_process.call_args
+        review_context = review_kwargs["review_context"]
+        assert "transcript_excerpt" not in review_context
+        assert "transcript_refs" not in review_context
+
+    def test_process_auto_learning_review_result_skips_quality_assessment_after_verifier_reject(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": True,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        rejected_candidate = {
+            "category": "skill",
+            "summary": "Patch outdated OpenVINO steps",
+            "confidence": 0.0,
+            "reason": "weak signal",
+            "target": "openvino-qwen-no-think",
+            "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+            "verifier": {
+                "disposition": "reject",
+                "confidence": 0.0,
+                "reason": "Do not promote.",
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+            },
+        }
+
+        with (
+            patch.object(agent, "_run_auto_learning_verifier_pass", return_value=[rejected_candidate]),
+            patch.object(agent, "_assess_auto_learning_candidate_quality", side_effect=AssertionError("quality assessment should be skipped for verifier rejects")),
+            patch("tools.skill_manager_tool.replay_validate_skill_candidate", side_effect=AssertionError("replay validation should be skipped for verifier rejects")),
+        ):
+            result = agent._process_auto_learning_review_result(
+                '{"candidates": [{"category": "skill", "summary": "Patch outdated OpenVINO steps", "confidence": 0.96, "reason": "reusable workflow fix", "target": "openvino-qwen-no-think", "payload": {"action": "patch", "old_string": "old", "new_string": "new"}}]}'
+            )
+
+        assert result["staged"] == 1
+        assert result["rejected"] == 1
+
+    def test_process_auto_learning_review_result_skips_update_candidate_when_evidence_is_unchanged(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        store = MagicMock()
+        added_entry = {
+            "id": "cand-1",
+            "status": "candidate",
+            "category": "memory",
+            "summary": "User prefers concise responses",
+            "confidence": 0.5,
+            "target": "user",
+            "payload": {"action": "add", "content": "User prefers concise responses."},
+            "evidence": {"candidate_reason": "single weak signal"},
+        }
+        rejected_entry = dict(added_entry)
+        rejected_entry["status"] = "rejected"
+        store.add_candidate.return_value = added_entry
+        store.mark_status.return_value = rejected_entry
+        store.update_candidate.side_effect = AssertionError("update_candidate should be skipped when evidence is unchanged")
+        agent._auto_learning_store = store
+
+        rejected_candidate = {
+            "category": "memory",
+            "summary": "User prefers concise responses",
+            "confidence": 0.0,
+            "reason": "single weak signal",
+            "target": "user",
+            "payload": {"action": "add", "content": "User prefers concise responses."},
+            "verifier": {
+                "disposition": "reject",
+                "confidence": 0.0,
+                "reason": "Do not stage.",
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+            },
+        }
+
+        with patch.object(agent, "_run_auto_learning_verifier_pass", return_value=[rejected_candidate]):
+            result = agent._process_auto_learning_review_result(
+                '{"candidates": [{"category": "memory", "summary": "User prefers concise responses", "confidence": 0.5, "reason": "single weak signal", "target": "user", "payload": {"action": "add", "content": "User prefers concise responses."}}]}'
+            )
+
+        assert result["staged"] == 1
+        assert result["rejected"] == 1
+        store.add_candidate.assert_called_once()
+        store.mark_status.assert_called_once_with("cand-1", "rejected")
+
+    def test_process_auto_learning_review_result_skips_promoter_resolution_when_promoter_evidence_already_matches(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": True,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "promoter": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                },
+            }
+        )
+
+        store = MagicMock()
+        promoter_evidence = {
+            "candidate_reason": "repeated explicit correction",
+            "promoter": {
+                "disposition": "promote",
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+            },
+        }
+        added_entry = {
+            "id": "cand-2",
+            "status": "candidate",
+            "category": "memory",
+            "summary": "User prefers concise responses",
+            "confidence": 0.95,
+            "target": "user",
+            "payload": {"action": "add", "content": "User prefers concise responses."},
+            "evidence": dict(promoter_evidence),
+        }
+        promoted_entry = dict(added_entry)
+        promoted_entry["status"] = "promoted"
+        store.add_candidate.return_value = added_entry
+        store.mark_status.return_value = promoted_entry
+        store.update_candidate.side_effect = AssertionError("update_candidate should be skipped when promoter evidence already matches")
+        agent._auto_learning_store = store
+
+        approved_candidate = {
+            "category": "memory",
+            "summary": "User prefers concise responses",
+            "confidence": 0.95,
+            "reason": "repeated explicit correction",
+            "target": "user",
+            "payload": {"action": "add", "content": "User prefers concise responses."},
+            "verifier": {
+                "disposition": "approve",
+                "confidence": 0.95,
+                "reason": "Strong evidence.",
+                "model": "claude-3-5-haiku-latest",
+                "provider": "anthropic",
+            },
+        }
+
+        with (
+            patch.object(agent, "_run_auto_learning_verifier_pass", return_value=[approved_candidate]),
+            patch.object(agent, "_assess_auto_learning_candidate_quality", return_value={}),
+            patch.object(agent, "_promote_auto_learning_candidate", return_value="promoted"),
+            patch.object(agent, "_resolve_auto_learning_actor_settings", side_effect=AssertionError("promoter settings resolution should be skipped when promoter evidence already matches")),
+        ):
+            result = agent._process_auto_learning_review_result(
+                '{"candidates": [{"category": "memory", "summary": "User prefers concise responses", "confidence": 0.95, "reason": "repeated explicit correction", "target": "user", "payload": {"action": "add", "content": "User prefers concise responses."}}]}'
+            )
+
+        assert result["staged"] == 1
+        assert result["promoted"] == 1
+        store.mark_status.assert_called_once_with("cand-2", "promoted")
+
+    def test_select_auto_learning_hook_reason_prefers_explicit_user_correction(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 4,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        agent._iters_since_skill = 0
+
+        hook_reason = agent._select_auto_learning_hook_reason(
+            [
+                {"role": "user", "content": "That's not what I asked. Use markdown tables instead."},
+                {"role": "assistant", "content": "Fixed it.", "tool_calls": None},
+            ]
+        )
+
+        assert hook_reason == "explicit_user_correction"
+
+    def test_build_auto_learning_review_context_records_recovery_and_delegation_metrics(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 4,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        agent._iters_since_skill = 1
+
+        review_context = agent._build_auto_learning_review_context(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call-read", "function": {"name": "read", "arguments": "{}"}},
+                        {"id": "call-delegate", "function": {"name": "delegate_task", "arguments": "{}"}},
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-read",
+                    "content": '{"error": "missing file"}',
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-delegate",
+                    "content": '{"success": true, "summary": "child finished"}',
+                },
+                {"role": "assistant", "content": "Recovered after the failed read and used the delegated result.", "tool_calls": None},
+            ],
+            hook_reason="failure_recovery",
+            reviewer_settings={"model": "google/gemini-3-flash-preview", "provider": "openrouter"},
+        )
+
+        assert review_context["hook_reason"] == "failure_recovery"
+        assert review_context["hook_signals"] == ["failure_recovery", "delegated_completion"]
+        assert review_context["metrics"] == {
+            "iteration_count": 1,
+            "tool_call_count": 2,
+            "failed_tool_call_count": 1,
+            "delegated_task_count": 1,
+        }
+
+    def test_should_run_auto_learning_review_selects_delegated_completion_for_current_turn(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 4,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        agent._iters_since_skill = 0
+
+        hook_reason = agent._should_run_auto_learning_review(
+            [
+                {"role": "user", "content": "Wrap it up."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call-delegate", "function": {"name": "delegate_task", "arguments": "{}"}},
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-delegate",
+                    "content": '{"success": true, "summary": "child finished"}',
+                },
+                {"role": "assistant", "content": "Handled with the delegated result.", "tool_calls": None},
+            ]
+        )
+
+        assert hook_reason == "delegated_completion"
+
+    def test_should_run_auto_learning_review_ignores_nested_child_tool_errors_in_successful_delegate_result(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 4,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        agent._iters_since_skill = 0
+
+        hook_reason = agent._should_run_auto_learning_review(
+            [
+                {"role": "user", "content": "Wrap it up."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call-delegate", "function": {"name": "delegate_task", "arguments": "{}"}},
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-delegate",
+                    "content": '{"results": [{"task_index": 0, "status": "completed", "summary": "Recovered and finished", "tool_trace": [{"tool": "read_file", "status": "error"}, {"tool": "write_file", "status": "ok"}]}], "total_duration_seconds": 1.2}',
+                },
+                {"role": "assistant", "content": "Handled with the delegated result.", "tool_calls": None},
+            ]
+        )
+
+        assert hook_reason == "delegated_completion"
+
+    def test_spawn_auto_learning_review_skips_when_no_durable_write_paths_are_available(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+        agent.valid_tool_names = {"web_search"}
+
+        with (
+            patch("agent.auto_learning.build_auto_learning_review_prompt") as mock_prompt,
+            patch.object(agent, "_resolve_auto_learning_actor_settings") as mock_resolve,
+            patch("run_agent.AIAgent") as mock_child_cls,
+            patch("run_agent.threading.Thread") as mock_thread_cls,
+        ):
+            agent._spawn_auto_learning_review(
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                hook_reason="tool_heavy_success",
+            )
+
+        mock_prompt.assert_not_called()
+        mock_resolve.assert_not_called()
+        mock_child_cls.assert_not_called()
+        mock_thread_cls.assert_not_called()
+
+    def test_spawn_auto_learning_review_uses_resolved_reviewer_route(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "reviewer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 6,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "reviewer-key",
+                "api_mode": "chat_completions",
+                "max_iterations": 6,
+                "timeout": None,
+            }) as mock_resolve,
+            patch("agent.auto_learning.build_auto_learning_review_prompt", return_value="review prompt"),
+            patch.object(agent, "_process_auto_learning_review_result") as mock_process,
+            patch("run_agent.AIAgent") as mock_child_cls,
+            patch("run_agent.threading.Thread") as mock_thread_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {"final_response": '{"candidates": []}'}
+            mock_child_cls.return_value = mock_child
+
+            def _run_now(*, target=None, **kwargs):
+                thread = MagicMock()
+                thread.start.side_effect = target
+                return thread
+
+            mock_thread_cls.side_effect = _run_now
+
+            agent._spawn_auto_learning_review(
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                hook_reason="tool_heavy_success",
+            )
+
+        mock_resolve.assert_called_once_with("reviewer")
+        _, kwargs = mock_child_cls.call_args
+        assert kwargs["model"] == "google/gemini-3-flash-preview"
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["api_key"] == mock_resolve.return_value["api_key"]
+        assert kwargs["api_mode"] == "chat_completions"
+        assert kwargs["max_iterations"] == 6
+        mock_process.assert_called_once()
+        review_args, review_kwargs = mock_process.call_args
+        assert review_args == ('{"candidates": []}',)
+        review_context = review_kwargs["review_context"]
+        assert review_context["hook_reason"] == "tool_heavy_success"
+        assert review_context["hook_signals"] == ["tool_heavy_success"]
+        assert review_context["source"]["trigger"] == "post_response_review"
+        assert review_context["source"]["actor"] == "reviewer"
+        assert review_context["source"]["model"] == "google/gemini-3-flash-preview"
+        assert review_context["metrics"] == {
+            "iteration_count": 0,
+            "tool_call_count": 0,
+            "failed_tool_call_count": 0,
+            "delegated_task_count": 0,
+        }
+        assert "transcript_refs" not in review_context
+        assert "transcript_excerpt" not in review_context
+
+    def test_assess_auto_learning_candidate_quality_skips_skill_replay_validation_when_auto_promotion_disabled(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        candidate = {
+            "category": "skill",
+            "summary": "Patch outdated OpenVINO steps",
+            "confidence": 0.96,
+            "reason": "reusable workflow fix",
+            "target": "openvino-qwen-no-think",
+            "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+        }
+
+        with patch("tools.skill_manager_tool.replay_validate_skill_candidate") as mock_validate:
+            quality = agent._assess_auto_learning_candidate_quality(candidate)
+
+        assert "skill_validation" not in quality
+        mock_validate.assert_not_called()
+
+    def test_promote_auto_learning_candidate_does_not_notify_when_skill_replay_validation_blocks_promotion(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": True,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+        agent.background_review_callback = MagicMock()
+
+        status = agent._promote_auto_learning_candidate(
+            {
+                "category": "skill",
+                "summary": "Patch outdated OpenVINO steps",
+                "confidence": 0.96,
+                "target": "openvino-qwen-no-think",
+                "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+                "evidence": {
+                    "quality": {
+                        "review_required": False,
+                        "skill_validation": {
+                            "valid": False,
+                            "action": "patch",
+                            "name": "openvino-qwen-no-think",
+                            "error": "old_string not found",
+                        },
+                    }
+                },
+            }
+        )
+
+        assert status == "manual_review"
+        agent.background_review_callback.assert_not_called()
+
+    def test_assess_auto_learning_candidate_quality_skips_skill_replay_validation_below_threshold(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": True,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        candidate = {
+            "category": "skill",
+            "summary": "Patch outdated OpenVINO steps",
+            "confidence": 0.41,
+            "reason": "single weak signal",
+            "target": "openvino-qwen-no-think",
+            "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+        }
+
+        with patch("tools.skill_manager_tool.replay_validate_skill_candidate") as mock_validate:
+            quality = agent._assess_auto_learning_candidate_quality(candidate)
+
+        assert "skill_validation" not in quality
+        mock_validate.assert_not_called()
+

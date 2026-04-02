@@ -62,6 +62,113 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+## Karpathy auto-learning quality engine
+
+### TL;DR
+
+Auto-learning means Hermes can look at work it just finished, decide whether it learned something useful, and save that learning carefully instead of forgetting it.
+
+In the simplest possible terms:
+- Hermes finishes a task
+- Hermes may notice: "this user prefers X" or "this procedure should become a reusable skill"
+- Hermes first saves that idea as a staged candidate
+- Hermes checks if that candidate looks safe, useful, duplicated, or contradictory
+- only then can it be promoted into durable memory or a durable skill
+
+What artifacts can improve:
+- staged learning candidates in the local auto-learning store
+- durable memory entries (user preferences, environment facts, conventions)
+- durable skills (repeatable workflows / procedures Hermes can reuse later)
+
+What it does not do:
+- it does not train model weights
+- it does not silently rewrite everything
+- it does not skip review/safety gates
+
+Hermes now has a staged, local-first auto-learning loop that grows in steps:
+- M001: stage reviewer candidates in a local store and optionally promote safe memory/skill learnings
+- M002: add reviewer/verifier routing, richer evidence, and more reliable hook selection
+- M003: add semantic dedupe, contradiction checks, `manual_review`, local search/show inspection, and shadow analytics
+- M004: add specialized proposer/verifier/critic/promoter roles with conservative routing and audit trails
+
+Current milestone blocks:
+
+### M001 — staged candidate learning store
+- captures post-task learning candidates in a local store under Hermes home
+- keeps auto-learning disabled by default and promotion conservative
+- supports manual inspection and promotion instead of silent durable writes
+
+### M002 — reviewer/verifier quality gates
+- adds dedicated reviewer/verifier routing for the learning loop
+- records richer evidence on staged candidates
+- improves hook selection so reviews trigger more reliably on useful turns
+
+### M004 — specialized learning roles
+- adds explicit proposer, verifier, critic, and promoter role configuration blocks
+- preserves backward-compatible defaults when specialized actors are not configured
+- records role-specific audit trails so staged decisions remain inspectable
+
+### Auto-learning flow
+
+```mermaid
+flowchart TD
+    start["Conversation finishes\npost-task review hook fires"] --> m1
+
+    subgraph m1["M001 — staged candidate store"]
+        reviewer["Reviewer\n(or default review actor)"] --> candidate["Candidate created\nlocal staged store"]
+        candidate --> manual["Operator can inspect\nlist / search / show"]
+    end
+
+    candidate --> m2gate
+
+    subgraph m2["M002 — reviewer / verifier gates"]
+        m2gate["Verifier checks evidence,\nconfidence, and trigger quality"] --> verified["Evidence-enriched candidate"]
+    end
+
+    verified --> m3gate
+
+    subgraph m3["M003 — trust layer"]
+        m3gate["Dedupe + contradiction checks\n+ shadow analytics"] --> decision{"Decision"}
+        decision -->|conflict / ambiguous| reviewbox["manual_review\nstays staged and reviewable"]
+        decision -->|clean candidate| eligible["Eligible for promotion"]
+    end
+
+    eligible --> m4gate
+
+    subgraph m4["M004 — specialized roles"]
+        proposer["Proposer\noptional specialized proposal actor"] --> candidate
+        eligible --> verifier2["Verifier\ncan downscore / approve / reject"]
+        verifier2 --> critic["Critic\noptional rejection / caution audit"]
+        verifier2 --> promoter["Promoter\noptional promotion audit"]
+    end
+
+    promoter --> promote{"Promotion path"}
+    critic --> reviewbox
+    verifier2 --> reviewbox
+
+    promote -->|memory candidate| memory["memory tool\nupdates durable memory"]
+    promote -->|skill candidate| skill["skill_manage tool\ncreates / patches skill"]
+
+    memory --> durable["Durable learning"]
+    skill --> durable
+    manual --> candidate
+```
+
+This is intentionally conservative: everything stages locally first, conflicting items remain reviewable, and only eligible candidates reach durable memory or skill promotion.
+
+Useful commands:
+
+```bash
+hermes autolearning status               # quality/status breakdowns
+hermes autolearning list                 # list staged candidates
+hermes autolearning search concise       # search staged evidence locally
+hermes autolearning show al-abc123       # inspect one candidate in detail
+hermes autolearning promote al-abc123    # manual operator promotion
+hermes autolearning reject al-abc123     # manual operator rejection
+```
+
+This quality engine is designed to improve trust before increasing autonomy: contradictory or low-confidence learnings stay reviewable instead of silently mutating durable memory or skills.
+
 ## CLI vs Messaging Quick Reference
 
 Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
