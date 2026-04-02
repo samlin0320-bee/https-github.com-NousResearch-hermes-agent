@@ -13,6 +13,7 @@ Improvements over v1:
   - Richer tool call/result detail in summarizer input
 """
 
+import atexit
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -90,6 +91,8 @@ class ContextCompressor:
         )
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
+        self._flush_thread: "threading.Thread | None" = None
+        atexit.register(self._join_flush_thread)
 
         # Derive token budgets: ratio is relative to the threshold, not total context
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -118,6 +121,15 @@ class ContextCompressor:
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+
+    def _join_flush_thread(self, timeout: float = 30.0) -> None:
+        """Wait for in-flight ByteRover flush thread at exit."""
+        t = self._flush_thread
+        if t is not None and t.is_alive():
+            logger.info("[brv-flush] Waiting for flush thread to finish (up to %.0fs)…", timeout)
+            t.join(timeout=timeout)
+            if t.is_alive():
+                logger.warning("[brv-flush] Flush thread still running after %.0fs — insights may be lost", timeout)
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -564,6 +576,36 @@ Write only the summary body. Do not include any preamble or prefix."""
                     self.protect_first_n + self.protect_last_n + 1,
                 )
             return messages
+
+        # Phase 0: ByteRover auto-flush — save insights before discarding turns.
+        # Runs in a daemon thread to avoid blocking compression (LLM call + curate
+        # can take up to 105s).  We extract plain text *here* to avoid data races
+        # (compression mutates the original message dicts after this point).
+        # Text is pre-extracted so brv_flush_on_compress receives plain strings
+        # and doesn't need to call _extract_text again.
+        try:
+            from byterover_integration.recall import brv_flush_on_compress
+            import threading
+            _flush_snapshot = []
+            for msg in messages[self.protect_first_n:]:
+                role = msg.get("role", "")
+                if role in ("user", "assistant"):
+                    raw = msg.get("content", "")
+                    text = raw if isinstance(raw, str) else "\n".join(
+                        b.get("text", "") for b in raw
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ) if isinstance(raw, list) else ""
+                    _flush_snapshot.append({"role": role, "content": text})
+            self._flush_thread = threading.Thread(
+                target=brv_flush_on_compress,
+                args=(_flush_snapshot, self.compression_count),
+                daemon=False,
+            )
+            self._flush_thread.start()
+        except ImportError:
+            pass  # ByteRover not available
+        except Exception as e:
+            logger.debug("ByteRover flush thread launch failed (non-fatal): %s", e)
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 

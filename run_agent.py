@@ -81,6 +81,10 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     build_nous_subscription_prompt,
 )
+try:
+    from byterover_integration.prompts import BRV_GUIDANCE
+except ImportError:
+    BRV_GUIDANCE = None
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
@@ -364,6 +368,18 @@ def _inject_honcho_turn_context(content, turn_context: str):
     if not text.strip():
         return note
     return f"{text}\n\n{note}"
+
+
+# ---------------------------------------------------------------------------
+# ByteRover memory bridge helpers (fire-and-forget curate)
+# ---------------------------------------------------------------------------
+try:
+    from byterover_integration.bridge import build_brv_memory_content, brv_curate_fire_and_forget
+    from byterover_integration.recall import BRV_REFRESH_INTERVAL as _BRV_REFRESH_INTERVAL
+except ImportError:
+    build_brv_memory_content = None
+    brv_curate_fire_and_forget = None
+    _BRV_REFRESH_INTERVAL = 10
 
 
 # Budget warning text patterns injected by _get_budget_warning().
@@ -956,6 +972,16 @@ class AIAgent:
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
         
+        # Snapshot the full tool surface before any stripping (Honcho, ByteRover).
+        # Used to restore tools if needed and to check tool availability.
+        self._all_tools = None  # Lazy: set on first _build_system_prompt call (after init-time stripping)
+        self._all_tool_names = set()
+        # ByteRover recall_mode is frozen on first prompt build to avoid
+        # cache-breaking mid-session tool surface changes.
+        self._brv_recall_mode_snapshot = None
+        # ByteRover periodic context refresh counter (re-query every 10 user turns).
+        self._brv_refresh_turn_count = 0
+
         # Check tool requirements
         if self.tools and not self.quiet_mode:
             requirements = check_toolset_requirements()
@@ -2559,6 +2585,13 @@ class AIAgent:
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
 
+        # Snapshot the full tool surface on first call so we can check
+        # tool availability reliably. Lazy init ensures Honcho/other
+        # init-time stripping is already done.
+        if self._all_tools is None:
+            self._all_tools = list(self.tools)
+            self._all_tool_names = {tool["function"]["name"] for tool in self.tools}
+
         # Try SOUL.md as primary identity (unless context files are skipped)
         _soul_loaded = False
         if not self.skip_context_files:
@@ -2592,6 +2625,19 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        # ByteRover: inject BRV_GUIDANCE when brv CLI is available and
+        # recall_mode is not "off".  brv runs directly via the terminal tool
+        # (no dedicated brv_command tool).
+        try:
+            from byterover_integration.client import check_requirements as _brv_available
+            from byterover_integration.recall import get_brv_recall_mode
+            if _brv_available() and "terminal" in self.valid_tool_names:
+                if self._brv_recall_mode_snapshot is None:
+                    self._brv_recall_mode_snapshot = get_brv_recall_mode()
+                if self._brv_recall_mode_snapshot != "off" and BRV_GUIDANCE:
+                    tool_guidance.append(BRV_GUIDANCE)
+        except ImportError:
+            pass
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -5634,6 +5680,26 @@ class AIAgent:
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
+            # ByteRover bridge: sync memory writes to project memory
+            _mem_action = function_args.get("action")
+            if _mem_action in ("add", "replace", "remove") and build_brv_memory_content:
+                try:
+                    from byterover_integration.client import check_requirements as _brv_check
+                    if _brv_check():
+                        _brv_recall = self._brv_recall_mode_snapshot or "hybrid"
+                        if _brv_recall != "off":
+                            _brv_content = build_brv_memory_content(
+                                action=_mem_action,
+                                target=target,
+                                content=function_args.get("content"),
+                            )
+                            threading.Thread(
+                                target=brv_curate_fire_and_forget,
+                                args=(_brv_content,),
+                                daemon=True,
+                            ).start()
+                except Exception:
+                    pass  # ByteRover bridge is best-effort
             return result
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -6488,36 +6554,156 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
+        # ByteRover periodic context refresh (every 10 user turns).
+        # Injects fresh brv context as user message prefix to preserve
+        # system prompt prefix caching. First turn is handled separately
+        # by the session-start injection below.
+        _brv_refresh_context = None
+        if conversation_history:  # Not first turn
+            _brv_mode = self._brv_recall_mode_snapshot
+            if _brv_mode is None:
+                try:
+                    from byterover_integration.recall import get_brv_recall_mode
+                    _brv_mode = get_brv_recall_mode()
+                except ImportError:
+                    _brv_mode = "off"
+            if _brv_mode in ("hybrid", "context"):
+                self._brv_refresh_turn_count += 1
+                if self._brv_refresh_turn_count >= _BRV_REFRESH_INTERVAL:
+                    self._brv_refresh_turn_count = 0
+                    try:
+                        from byterover_integration.recall import brv_auto_enrich
+                        from byterover_integration.client import check_requirements as _brv_ok
+                        if _brv_ok():
+                            _brv_refresh_context = brv_auto_enrich(original_user_message)
+                    except Exception as e:
+                        logger.debug("ByteRover context refresh failed: %s", e)
+
+        # Honcho + ByteRover prefetch (run in parallel via ThreadPoolExecutor).
+        #
         # Honcho prefetch consumption:
         # - First turn: bake into cached system prompt (stable for the session).
         # - Later turns: attach recall to the current-turn user message at
         #   API-call time only (never persisted to history / session DB).
+        # ByteRover session-start context: query project memory ONCE on the
+        # first turn, bake into system prompt (stable for the session).
+        # Periodic refresh every 10 turns via user message prefix (above).
         #
-        # This keeps the system-prefix cache stable while still allowing turn N
-        # to consume background prefetch results from turn N-1.
+        # Running both in parallel so total latency = max(honcho, brv)
+        # instead of honcho + brv.
         self._honcho_context = ""
         self._honcho_turn_context = ""
-        _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
-        if self._honcho and self._honcho_session_key and _recall_mode != "tools":
+        self._brv_session_context = ""
+
+        _should_honcho = (
+            self._honcho and self._honcho_session_key
+            and (self._honcho_config.recall_mode if self._honcho_config else "hybrid") != "tools"
+        )
+        # ByteRover: only enrich on first turn (session start), not per-turn
+        _should_brv = False
+        _brv_auto_enrich_fn = None
+        if not conversation_history:
             try:
-                prefetched_context = self._honcho_prefetch(original_user_message)
-                if prefetched_context:
-                    if not conversation_history:
-                        self._honcho_context = prefetched_context
-                    else:
-                        self._honcho_turn_context = prefetched_context
+                from byterover_integration.recall import brv_auto_enrich as _brv_enrich, get_brv_recall_mode
+                from byterover_integration.client import check_requirements as brv_check
+                _brv_mode = self._brv_recall_mode_snapshot or get_brv_recall_mode()
+                if _brv_mode in ("hybrid", "context") and brv_check():
+                    _should_brv = True
+                    _brv_auto_enrich_fn = _brv_enrich
+            except ImportError:
+                pass
             except Exception as e:
-                logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+                logger.debug("ByteRover import failed (non-fatal): %s", e)
+
+        if _should_honcho or _should_brv:
+            from concurrent.futures import ThreadPoolExecutor
+            _PREFETCH_DEADLINE = 10  # seconds — overall deadline for both prefetches
+            with ThreadPoolExecutor(max_workers=2) as _pool:
+                _honcho_future = _pool.submit(self._honcho_prefetch, original_user_message) if _should_honcho else None
+                _brv_future = _pool.submit(_brv_auto_enrich_fn, original_user_message) if _should_brv else None
+
+                if _honcho_future:
+                    try:
+                        _honcho_result = _honcho_future.result(timeout=_PREFETCH_DEADLINE)
+                        if _honcho_result:
+                            if not conversation_history:
+                                self._honcho_context = _honcho_result
+                            else:
+                                self._honcho_turn_context = _honcho_result
+                    except Exception as e:
+                        logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+
+                if _brv_future:
+                    try:
+                        _brv_result = _brv_future.result(timeout=_PREFETCH_DEADLINE)
+                        if _brv_result:
+                            self._brv_session_context = _brv_result
+                    except Exception as e:
+                        logger.debug("ByteRover session context failed (non-fatal): %s", e)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
-        
+
+        # ByteRover onboarding / context refresh — build a prefix that is
+        # injected at API-call time only (not persisted to session history).
+        # This keeps the canonical user message clean for replay/reconnect.
+        _brv_api_prefix = ""
+        if not conversation_history:
+            try:
+                from byterover_integration.client import check_requirements as _brv_available
+                if _brv_available():
+                    from byterover_integration.onboarding import get_brv_onboarding_prompt as _get_onboard
+                    _onboard_prompt = _get_onboard()
+                    if _onboard_prompt:
+                        _brv_api_prefix = (
+                            "<brv-onboarding>\n"
+                            "[System note: ByteRover long-term memory is available but not yet configured. "
+                            "Briefly mention this to the user after responding to their message — "
+                            "do NOT block or delay your response for setup. "
+                            "If the user wants to set it up, follow the instructions below. "
+                            "This is optional and should not interrupt the user's workflow.]\n\n"
+                            + _onboard_prompt
+                            + "\n</brv-onboarding>\n\n"
+                        )
+            except Exception:
+                pass
+        else:
+            # Subsequent turns: inject a brief reminder to continue onboarding
+            # if the marker file hasn't been created yet.
+            try:
+                from byterover_integration.onboarding import is_brv_onboarded, get_setup_step
+                from byterover_integration.client import check_requirements as _brv_available
+                if _brv_available() and not is_brv_onboarded():
+                    _step = get_setup_step()
+                    if _step == "provider":
+                        _brv_api_prefix = (
+                            "[ByteRover setup is pending (Step 1). If the user wants to continue setup, "
+                            "present provider choices. Otherwise, respond to their message normally.]\n\n"
+                        )
+                    elif _step == "storage":
+                        _brv_api_prefix = (
+                            "[ByteRover setup is pending (Step 2). If the user wants to continue setup, "
+                            "ask local vs cloud. Otherwise, respond to their message normally.]\n\n"
+                        )
+            except Exception:
+                pass
+
+        # ByteRover periodic context refresh
+        if _brv_refresh_context:
+            _brv_api_prefix = (
+                "<memory-context>\n[ByteRover Context Refresh]\n\n"
+                + _brv_refresh_context
+                + "\n</memory-context>\n\n"
+            ) + _brv_api_prefix
+            logger.info("[brv-refresh] Injected %d chars of fresh context at turn %d",
+                        len(_brv_refresh_context), self._user_turn_count)
+
         if not self.quiet_mode:
             self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
-        
+
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
         # Only rebuilt after context compression events (which invalidate
@@ -6551,6 +6737,20 @@ class AIAgent:
                 if self._honcho_context:
                     self._cached_system_prompt = (
                         self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                # Bake ByteRover session context into the prompt so it's
+                # stable for the entire session (queried once at start).
+                if self._brv_session_context:
+                    _brv_block = (
+                        "# Project memory (background reference)\n"
+                        "This is background context from long-term memory, retrieved at session start. "
+                        "Reference it ONLY when relevant to the user's current question. "
+                        "Do NOT repeat or summarize this context unless specifically asked. "
+                        "Always prioritize the user's actual request over this background context.\n\n"
+                        + self._brv_session_context
+                    )
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + _brv_block
                     ).strip()
 
                 # Plugin hook: on_session_start
@@ -6723,10 +6923,22 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                # Inject turn-level context from Honcho and ByteRover into the
+                # current-turn user message (API-time only, not persisted).
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    _cur_content = api_msg.get("content", "")
+                    # Apply brv prefix (onboarding/refresh) — API-time only
+                    if _brv_api_prefix:
+                        if isinstance(_cur_content, list):
+                            _cur_content = [{"type": "text", "text": _brv_api_prefix}] + list(_cur_content)
+                        else:
+                            _cur_content = _brv_api_prefix + ("" if _cur_content is None else str(_cur_content))
+                        api_msg["content"] = _cur_content
+                    # Honcho turn-level recall (unchanged from upstream)
+                    if self._honcho_turn_context:
+                        api_msg["content"] = _inject_honcho_turn_context(
+                            api_msg.get("content", ""), self._honcho_turn_context
+                        )
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -8487,6 +8699,21 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        # ByteRover per-turn auto-curate — LLM checks if the turn has
+        # insights worth preserving, then curates in the background.
+        if final_response and not interrupted:
+            try:
+                from byterover_integration.client import check_requirements as _brv_avail
+                if _brv_avail():
+                    from byterover_integration.recall import brv_auto_curate_turn
+                    threading.Thread(
+                        target=brv_auto_curate_turn,
+                        args=(original_user_message, final_response),
+                        daemon=True,
+                    ).start()
+            except Exception:
+                pass  # Auto-curate is best-effort
 
         # Plugin hook: on_session_end
         # Fired at the very end of every run_conversation call.

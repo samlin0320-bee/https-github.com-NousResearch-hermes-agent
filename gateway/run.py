@@ -636,7 +636,8 @@ class GatewayRunner:
         """
         # Skip cron sessions — they run headless with no meaningful user
         # conversation to extract memories from.
-        if old_session_id and old_session_id.startswith("cron_"):
+        _CRON_SESSION_PREFIX = "cron_"
+        if old_session_id and old_session_id.startswith(_CRON_SESSION_PREFIX):
             logger.debug("Skipping memory flush for cron session: %s", old_session_id)
             return
 
@@ -681,6 +682,7 @@ class GatewayRunner:
             _current_memory = ""
             try:
                 from tools.memory_tool import MEMORY_DIR
+                # Only these 2 files — matches memory_tool.py's managed set.
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
                     ("USER.md", "USER PROFILE (who the user is)"),
@@ -690,8 +692,8 @@ class GatewayRunner:
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:
                             _current_memory += f"\n\n## Current {label}:\n{content}"
-            except Exception:
-                pass  # Non-fatal — flush still works, just without the guard
+            except Exception as e:
+                logger.warning("Failed to read memory files for flush guard: %s", e)
 
             # Give the agent a real turn to think about what to save
             flush_prompt = (
@@ -713,7 +715,7 @@ class GatewayRunner:
                     "conversation ended. Do NOT overwrite or remove entries unless "
                     "the conversation above reveals something that genuinely "
                     "supersedes them. Only add new information that is not already "
-                    "captured below."
+                    "captured below.\n\n"
                     f"{_current_memory}\n\n"
                 )
 

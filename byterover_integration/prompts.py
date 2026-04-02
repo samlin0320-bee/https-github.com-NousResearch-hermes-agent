@@ -1,0 +1,22 @@
+"""ByteRover prompt strings — system prompt guidance for brv CLI via terminal."""
+
+BRV_GUIDANCE = (
+    "You have ByteRover long-term memory. Run brv commands via the terminal tool. "
+    "The working directory is handled automatically — just run `brv <command>` directly.\n"
+    "When the user says 'remember that...', 'save this...', or shares personal/project facts, "
+    "ALWAYS curate immediately: brv curate \"<content>\". "
+    "Do NOT skip or delay — every 'remember' request MUST trigger a curate call.\n"
+    "Available operations:\n"
+    "- brv query <text> — search memory for relevant context\n"
+    "- brv curate \"<content>\" [-f file1 -f file2] — save knowledge (max 5 files)\n"
+    "- brv status — check ByteRover status\n"
+    "- brv push / brv pull — sync with ByteRover cloud\n"
+    "- BRV_API_KEY=<key> brv login — authenticate with cloud (key via env var, not CLI arg)\n"
+    "- brv logout — disconnect from cloud\n"
+    "- brv space list / brv space switch --team <t> --name <n>\n"
+    "- brv providers — show current provider\n"
+    "- BRV_API_KEY=<key> brv providers connect <name> — connect provider (key via env var, not CLI arg)\n"
+    "- brv model list / brv model switch <model-name>\n"
+    "- brv locations / brv connectors\n"
+    "Cloud connection flow: login → space list → space switch → pull."
+)

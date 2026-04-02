@@ -460,6 +460,16 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # ByteRover long-term project memory
+    # recall_mode controls how ByteRover context is delivered:
+    #   hybrid  — auto-enrich user messages + brv_query/brv_curate tools (default)
+    #   context — auto-enrich only, no tools exposed
+    #   tools   — tools only, no auto-enrichment
+    #   off     — disable ByteRover entirely
+    "byterover": {
+        "recall_mode": "hybrid",
+    },
+
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
     # Empty string means use server-local time.
     "timezone": "",

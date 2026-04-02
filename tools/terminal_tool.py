@@ -1441,13 +1441,57 @@ TERMINAL_SCHEMA = {
 }
 
 
+import re as _re
+
+_BRV_CMD_PATTERN = _re.compile(
+    r'(?:^|[;&|]\s*|&&\s*|\|\|\s*)'
+    r'(?:sudo\s+(?:-\S+\s+)*)?'
+    r'(?:\S+=\S+\s+)*'
+    r'(?:\.{0,2}/[\w./-]*)?'
+    r'brv\b'
+)
+
+
+def _rewrite_brv_cwd(command: str) -> tuple:
+    """If *command* invokes brv, return (command, workdir) ensuring it runs
+    inside ``~/.hermes/byterover/`` so the ``.brv`` context tree stays in one
+    place.  Returns ``(command, None)`` when no rewrite is needed.
+
+    Detects the same patterns the old blocking regex did (direct, compound,
+    env-prefix, full-path, sudo) but REWRITES instead of blocking.
+    """
+    _stripped = command.lstrip() if command else ""
+    _is_brv = bool(_BRV_CMD_PATTERN.search(_stripped))
+    if not _is_brv:
+        return command, None
+    try:
+        from byterover_integration.client import check_requirements, get_brv_default_cwd
+        if check_requirements():
+            brv_cwd = str(get_brv_default_cwd())
+            from pathlib import Path
+            Path(brv_cwd).mkdir(parents=True, exist_ok=True)
+            return command, brv_cwd
+    except Exception:
+        pass
+    return command, None
+
+
 def _handle_terminal(args, **kw):
+    command = args.get("command", "")
+    workdir = args.get("workdir")
+
+    # Auto-set workdir for brv commands so .brv stays in ~/.hermes/byterover/
+    if not workdir:
+        command, brv_workdir = _rewrite_brv_cwd(command)
+        if brv_workdir:
+            workdir = brv_workdir
+
     return terminal_tool(
-        command=args.get("command"),
+        command=command,
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
-        workdir=args.get("workdir"),
+        workdir=workdir,
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
     )
