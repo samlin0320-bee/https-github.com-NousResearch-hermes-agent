@@ -106,6 +106,18 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_invalid_roles_are_dropped_before_api_call(self):
+        msgs = [
+            {"role": "session_meta", "content": ""},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

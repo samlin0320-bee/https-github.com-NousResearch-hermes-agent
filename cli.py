@@ -2164,7 +2164,7 @@ class HermesCLI:
                 _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
                 _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
                 return False
-            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            restored = self._load_restored_conversation(self.session_id)
             if restored:
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
@@ -2334,6 +2334,39 @@ class HermesCLI:
 
         self.console.print()
 
+    @staticmethod
+    def _normalize_restored_conversation(
+        messages: List[Dict[str, Any]] | None,
+    ) -> List[Dict[str, Any]]:
+        """Drop transcript-only metadata before reusing session history."""
+        if not messages:
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        dropped_roles: set[str] = set()
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == "session_meta":
+                dropped_roles.add("session_meta")
+                continue
+            normalized.append(msg)
+
+        if dropped_roles:
+            logger.debug(
+                "Filtered transcript-only restored role(s): %s",
+                ", ".join(sorted(dropped_roles)),
+            )
+        return normalized
+
+    def _load_restored_conversation(self, session_id: str) -> List[Dict[str, Any]]:
+        """Load and normalize persisted conversation history for CLI restore paths."""
+        if not self._session_db:
+            return []
+        restored = self._session_db.get_messages_as_conversation(session_id)
+        return self._normalize_restored_conversation(restored)
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -2359,7 +2392,7 @@ class HermesCLI:
             )
             return False
 
-        restored = self._session_db.get_messages_as_conversation(self.session_id)
+        restored = self._load_restored_conversation(self.session_id)
         if restored:
             self.conversation_history = restored
             msg_count = len([m for m in restored if m.get("role") == "user"])
@@ -3260,7 +3293,7 @@ class HermesCLI:
         self._pending_title = None
 
         # Load conversation history
-        restored = self._session_db.get_messages_as_conversation(target_id)
+        restored = self._load_restored_conversation(target_id)
         self.conversation_history = restored or []
 
         # Re-open the target session so it's not marked as ended

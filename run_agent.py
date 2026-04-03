@@ -2593,6 +2593,26 @@ class AIAgent:
         is present — so orphans from session loading or manual message
         manipulation are always caught.
         """
+        allowed_roles = {"system", "user", "assistant", "tool", "function", "developer"}
+        filtered_messages: List[Dict[str, Any]] = []
+        dropped_roles: set[str] = set()
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role not in allowed_roles:
+                if role:
+                    dropped_roles.add(str(role))
+                continue
+            filtered_messages.append(msg)
+
+        if dropped_roles:
+            logger.debug(
+                "Pre-call sanitizer: dropped message(s) with unsupported role(s): %s",
+                ", ".join(sorted(dropped_roles)),
+            )
+
+        messages = filtered_messages
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":

@@ -394,6 +394,25 @@ class TestPreloadResumedSession:
         assert "Test Session" in output
         assert "2 user messages" in output
 
+    def test_preload_filters_session_meta_from_restored_history(self):
+        cli = _make_cli(resume="filtered_session")
+        messages = [
+            {"role": "session_meta", "content": None, "tools": []},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "filtered_session", "title": None}
+        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+
+        assert cli._preload_resumed_session() is True
+        assert cli.conversation_history == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
     def test_reopens_session_in_db(self):
         cli = _make_cli(resume="reopen_session")
         messages = [{"role": "user", "content": "hi"}]
@@ -458,6 +477,32 @@ class TestInitAgentSkipsPreloaded:
 
         # get_messages_as_conversation should NOT have been called
         mock_db.get_messages_as_conversation.assert_not_called()
+
+    def test_init_agent_filters_session_meta_when_loading_resumed_history(self):
+        cli = _make_cli(resume="restored_session")
+        cli._resumed = True
+        cli.conversation_history = []
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "restored_session", "title": None}
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "session_meta", "content": None, "tools": []},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ]
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+
+        with (
+            patch.object(cli, "_ensure_runtime_credentials", return_value=True),
+            patch("cli.AIAgent", return_value=MagicMock()),
+        ):
+            assert cli._init_agent() is True
+
+        assert cli.conversation_history == [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ]
 
 
 # ── Config default tests ─────────────────────────────────────────────
