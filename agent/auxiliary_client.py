@@ -913,7 +913,9 @@ def _to_async_client(sync_client, model: str):
         async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
         async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
-    return AsyncOpenAI(**async_kwargs), model
+    async_client = AsyncOpenAI(**async_kwargs)
+    _track_async_client(async_client)
+    return async_client, model
 
 
 def resolve_provider_client(
@@ -1346,6 +1348,34 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 
+# Weak-reference registry for ALL async clients created anywhere (including
+# those returned by resolve_provider_client that bypass _client_cache).
+# Used by _force_close_all_async_clients() during shutdown and by the
+# prompt_toolkit exception-handler safety net.
+import weakref as _weakref
+_all_async_clients: list = []
+_all_async_clients_lock = threading.Lock()
+
+
+def _track_async_client(client: Any) -> None:
+    """Register an async client so it will be neutered on shutdown."""
+    with _all_async_clients_lock:
+        _all_async_clients.append(_weakref.ref(client))
+
+
+def _force_close_all_async_clients() -> None:
+    """Mark ALL tracked async clients as closed to prevent __del__ crashes.
+
+    Covers clients created via resolve_provider_client (not in _client_cache)
+    as well as any client manually registered with _track_async_client.
+    """
+    with _all_async_clients_lock:
+        for ref in _all_async_clients:
+            client = ref()
+            if client is not None:
+                _force_close_async_httpx(client)
+        _all_async_clients.clear()
+
 
 def neuter_async_httpx_del() -> None:
     """Monkey-patch ``AsyncHttpxClientWrapper.__del__`` to be a no-op.
@@ -1405,6 +1435,8 @@ def shutdown_cached_clients() -> None:
 
     Call this during CLI shutdown, *before* the event loop is closed, to
     avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
+    Covers both _client_cache entries and clients tracked via
+    _track_async_client (e.g. those from resolve_provider_client).
     """
     import inspect
 
@@ -1425,6 +1457,9 @@ def shutdown_cached_clients() -> None:
             except Exception:
                 pass
         _client_cache.clear()
+
+    # Also neuter any async clients that bypassed _client_cache.
+    _force_close_all_async_clients()
 
 
 def cleanup_stale_async_clients() -> None:
