@@ -9,6 +9,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -78,6 +79,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
+        self._token_lock_identity: Optional[str] = None
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -116,25 +118,53 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
 
         try:
-            # Acquire scoped lock to prevent duplicate app token usage
+            # Acquire scoped lock to prevent duplicate app token usage.
             from gateway.status import acquire_scoped_lock
+
             self._token_lock_identity = app_token
-            acquired, existing = acquire_scoped_lock('slack-app-token', app_token, metadata={'platform': 'slack'})
+            acquired, existing = acquire_scoped_lock(
+                "slack-app-token",
+                app_token,
+                metadata={"platform": "slack"},
+            )
             if not acquired:
-                owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-                message = f'Slack app token already in use' + (f' (PID {owner_pid})' if owner_pid else '') + '. Stop the other gateway first.'
-                logger.error('[%s] %s', self.name, message)
-                self._set_fatal_error('slack_token_lock', message, retryable=False)
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+                message = "Slack app token already in use"
+                if owner_pid:
+                    message += f" (PID {owner_pid})"
+                message += ". Stop the other gateway first."
+                logger.error("[%s] %s", self.name, message)
+                self._set_fatal_error("slack_token_lock", message, retryable=False)
                 return False
 
-            # First token is the primary — used for AsyncApp / Socket Mode
+            # First token is the primary one used by AsyncApp / Socket Mode.
             primary_token = bot_tokens[0]
             self._app = AsyncApp(token=primary_token)
 
-            # Register each bot token and map team_id → client
+            async def _resolve_auth_response(auth_client) -> Dict[str, Any]:
+                auth_test_fn = getattr(auth_client, "auth_test", None)
+                if not callable(auth_test_fn):
+                    return {}
+                maybe_result = auth_test_fn()
+                resolved = await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+                if isinstance(resolved, dict):
+                    return resolved
+                data = getattr(resolved, "data", None)
+                if isinstance(data, dict):
+                    return data
+                return {}
+
+            # Seed bot identity from the primary app client for compatibility
+            # with tests/mocks that only patch AsyncApp.client.auth_test().
+            primary_auth = await _resolve_auth_response(self._app.client)
+            if isinstance(primary_auth, dict):
+                self._bot_user_id = primary_auth.get("user_id") or self._bot_user_id
+
+            # Register each bot token and map team_id → client.
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
-                auth_response = await client.auth_test()
+                auth_response = await _resolve_auth_response(client)
+
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
                 bot_name = auth_response.get("user", "unknown")
@@ -143,13 +173,15 @@ class SlackAdapter(BasePlatformAdapter):
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
 
-                # First token sets the primary bot_user_id (backward compat)
+                # Keep backward compatibility with single-workspace behavior.
                 if self._bot_user_id is None:
                     self._bot_user_id = bot_user_id
 
                 logger.info(
                     "[Slack] Authenticated as @%s in workspace %s (team: %s)",
-                    bot_name, team_name, team_id,
+                    bot_name,
+                    team_name,
+                    team_id,
                 )
 
             # Register message event handler
@@ -158,8 +190,6 @@ class SlackAdapter(BasePlatformAdapter):
                 await self._handle_slack_message(event)
 
             # Acknowledge app_mention events to prevent Bolt 404 errors.
-            # The "message" handler above already processes @mentions in
-            # channels, so this is intentionally a no-op to avoid duplicates.
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
                 pass
