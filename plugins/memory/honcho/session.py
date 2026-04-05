@@ -830,6 +830,12 @@ class HonchoSessionManager:
         Fast, no LLM reasoning. Returns raw structured facts Honcho has
         inferred about the user (name, role, preferences, patterns).
         Empty list if unavailable.
+
+        Uses self-observation (peer_perspective=user_peer_id) rather than
+        cross-peer observation, because peer_card data is written by the
+        deriver at the self-observation level (user → user). Cross-peer
+        queries (assistant → user) return empty unless the assistant peer
+        has explicitly built its own view via update_peer_card tool calls.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -844,7 +850,7 @@ class HonchoSessionManager:
                 summary=False,
                 tokens=200,
                 peer_target=session.user_peer_id,
-                peer_perspective=session.assistant_peer_id,
+                peer_perspective=session.user_peer_id,
             )
             card = ctx.peer_card or []
             return card if isinstance(card, list) else [str(card)]
