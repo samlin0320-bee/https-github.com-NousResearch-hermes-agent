@@ -6,10 +6,9 @@ Exposes an HTTP server with endpoints:
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
-- GET  /v1/models                  — lists hermes-agent as an available model
+- GET  /v1/models                  — lists active requestable models plus hermes-agent alias
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
-- GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
-- GET  /health                     — health check
+- GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events- GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
@@ -505,6 +504,98 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _runtime_model_context(self) -> Dict[str, Any]:
+        """Resolve the active runtime/provider context for API-server requests."""
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        return {
+            "runtime_kwargs": runtime_kwargs,
+            "provider": str(runtime_kwargs.get("provider") or "").strip(),
+            "default_model": _resolve_gateway_model(),
+        }
+
+    @staticmethod
+    def _dedupe_model_ids(model_ids: List[str]) -> List[str]:
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for model_id in model_ids:
+            normalized = str(model_id or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
+
+    def _get_served_model_ids(self) -> List[str]:
+        """Return real requestable model ids for the active runtime provider."""
+        try:
+            context = self._runtime_model_context()
+        except Exception as exc:
+            logger.debug("Could not resolve runtime model context for /v1/models: %s", exc)
+            return []
+
+        runtime_kwargs = context.get("runtime_kwargs") or {}
+        provider = context.get("provider") or ""
+        default_model = str(context.get("default_model") or "").strip()
+
+        model_ids: List[str] = []
+        try:
+            from hermes_cli.models import fetch_api_models, provider_model_ids
+
+            live_models = fetch_api_models(
+                runtime_kwargs.get("api_key"),
+                runtime_kwargs.get("base_url"),
+            )
+            if live_models:
+                model_ids.extend(live_models)
+            elif provider:
+                model_ids.extend(provider_model_ids(provider))
+        except Exception as exc:
+            logger.debug("Could not discover served model ids for provider %s: %s", provider, exc)
+
+        if default_model:
+            model_ids.append(default_model)
+
+        return self._dedupe_model_ids(model_ids)
+
+    def _resolve_request_model(self, requested_model: Optional[str]) -> Dict[str, str]:
+        """Resolve a request model into the concrete runtime model Hermes should use."""
+        requested = str(requested_model or "").strip()
+
+        if not requested or requested == "hermes-agent":
+            default_model = ""
+            try:
+                context = self._runtime_model_context()
+                default_model = str(context.get("default_model") or "").strip()
+            except Exception:
+                default_model = ""
+            return {
+                "requested_model": "hermes-agent",
+                "agent_model": default_model or "hermes-agent",
+            }
+
+        served_model_ids = set(self._get_served_model_ids())
+        if requested not in served_model_ids:
+            raise ValueError(f"Unknown or inactive model '{requested}' for this Hermes API server.")
+
+        return {
+            "requested_model": requested,
+            "agent_model": requested,
+        }
+
+    @staticmethod
+    def _model_card(model_id: str, *, owned_by: str = "hermes") -> Dict[str, Any]:
+        return {
+            "id": model_id,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": owned_by,
+            "permission": [],
+            "root": model_id,
+            "parent": None,
+        }
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -517,7 +608,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
-    ) -> Any:
+        model: Optional[str] = None,    ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
 
@@ -527,11 +618,12 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway platforms), falling back to the hermes-api-server default.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+        from gateway.run import _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        context = self._runtime_model_context()
+        runtime_kwargs = context["runtime_kwargs"]
+        resolved_model = model or context.get("default_model") or ""
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -544,7 +636,7 @@ class APIServerAdapter(BasePlatformAdapter):
         fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
-            model=model,
+            model=resolved_model,
             **runtime_kwargs,
             max_iterations=max_iterations,
             quiet_mode=True,
@@ -592,25 +684,26 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
+        """GET /v1/models — return active requestable models plus hermes-agent alias."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
+        model_cards = [self._model_card("hermes-agent", owned_by="hermes")]
+        try:
+            context = self._runtime_model_context()
+            provider = str(context.get("provider") or "hermes").strip() or "hermes"
+        except Exception:
+            provider = "hermes"
+
+        for model_id in self._get_served_model_ids():
+            if model_id == "hermes-agent":
+                continue
+            model_cards.append(self._model_card(model_id, owned_by=provider))
+
         return web.json_response({
             "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
-        })
+            "data": model_cards,        })
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -659,6 +752,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        try:
+            resolved_model = self._resolve_request_model(body.get("model", "hermes-agent"))
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), param="model", code="model_not_found"),
                 status=400,
             )
 
@@ -712,8 +813,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
-        created = int(time.time())
+        model_name = resolved_model["requested_model"]        created = int(time.time())
 
         if stream:
             import queue as _q
@@ -769,6 +869,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                agent_model=resolved_model["agent_model"],
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
@@ -786,6 +887,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                agent_model=resolved_model["agent_model"],
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1480,6 +1582,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
+        try:
+            resolved_model = self._resolve_request_model(body.get("model", "hermes-agent"))
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), param="model", code="model_not_found"),
+                status=400,
+            )
+
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
             conversation_history = conversation_history[-100:]
@@ -1568,6 +1678,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                agent_model=resolved_model["agent_model"],
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1620,8 +1731,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
-            "output": output_items,
+            "model": resolved_model["requested_model"],            "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
@@ -1987,6 +2097,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        agent_model: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2010,6 +2121,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
+                model=agent_model,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
