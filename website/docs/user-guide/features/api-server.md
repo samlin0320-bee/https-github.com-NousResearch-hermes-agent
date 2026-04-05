@@ -154,7 +154,7 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Returns an OpenAI-style model list containing the real models Hermes can currently route to with the active provider/runtime config, plus the backward-compatible `hermes-agent` alias. Most frontends call this for model discovery.
+Returns an OpenAI-style model list containing provider-qualified model IDs for the configured/usable Hermes providers, plus the backward-compatible `hermes-agent` alias. Most frontends call this for model discovery. For example, Hermes may expose IDs like `copilot/gpt-5.4` or `anthropic/claude-sonnet-4-5-20250929` so request-time routing stays deterministic across providers.
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
@@ -278,7 +278,7 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — vision/document analysis via uploaded files is not yet supported through the API.
-- **Request-time model selection is validated** — clients may request `hermes-agent` or any model returned by `GET /v1/models`. Unknown or inactive models are rejected with an OpenAI-style error. Hermes still only advertises models it can route with the current runtime/provider configuration.
+- **Request-time model selection is validated** — clients may request `hermes-agent` or any provider-qualified model returned by `GET /v1/models`. Unknown or inactive models are rejected with an OpenAI-style error. Hermes only advertises models it can currently route for configured/usable providers, and the provider prefix determines which runtime credentials/base URL are used for the request.
 
 ## Proxy Mode
 

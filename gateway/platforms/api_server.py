@@ -527,61 +527,119 @@ class APIServerAdapter(BasePlatformAdapter):
             ordered.append(normalized)
         return ordered
 
-    def _get_served_model_ids(self) -> List[str]:
-        """Return real requestable model ids for the active runtime provider."""
+    @staticmethod
+    def _dedupe_model_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen: set[str] = set()
+        ordered: List[Dict[str, Any]] = []
+        for record in records:
+            public_model_id = str(record.get("public_model_id") or "").strip()
+            if not public_model_id or public_model_id in seen:
+                continue
+            seen.add(public_model_id)
+            ordered.append(record)
+        return ordered
+
+    def _configured_provider_ids(self) -> List[str]:
+        provider_ids: List[str] = []
+
         try:
-            context = self._runtime_model_context()
+            from hermes_cli.models import list_available_providers
+
+            provider_ids.extend(
+                str(item.get("id") or "").strip()
+                for item in list_available_providers()
+                if item.get("authenticated")
+            )
         except Exception as exc:
-            logger.debug("Could not resolve runtime model context for /v1/models: %s", exc)
-            return []
+            logger.debug("Could not list configured providers for /v1/models: %s", exc)
 
-        runtime_kwargs = context.get("runtime_kwargs") or {}
-        provider = context.get("provider") or ""
-        default_model = str(context.get("default_model") or "").strip()
+        try:
+            active_provider = str(self._runtime_model_context().get("provider") or "").strip()
+            if active_provider:
+                provider_ids.insert(0, active_provider)
+        except Exception:
+            pass
 
-        model_ids: List[str] = []
+        return self._dedupe_model_ids(provider_ids)
+
+    def _get_served_model_records(self) -> List[Dict[str, Any]]:
+        """Return provider-qualified requestable model records for configured providers."""
+        try:
+            active_context = self._runtime_model_context()
+        except Exception as exc:
+            logger.debug("Could not resolve active runtime model context for /v1/models: %s", exc)
+            active_context = {"provider": "", "default_model": ""}
+
+        active_provider = str(active_context.get("provider") or "").strip()
+        active_default_model = str(active_context.get("default_model") or "").strip()
+
+        records: List[Dict[str, Any]] = []
         try:
             from hermes_cli.models import fetch_api_models, provider_model_ids
+            from hermes_cli.runtime_provider import resolve_runtime_provider
 
-            live_models = fetch_api_models(
-                runtime_kwargs.get("api_key"),
-                runtime_kwargs.get("base_url"),
-            )
-            if live_models:
-                model_ids.extend(live_models)
-            elif provider:
-                model_ids.extend(provider_model_ids(provider))
+            for provider_id in self._configured_provider_ids():
+                runtime_kwargs = resolve_runtime_provider(requested=provider_id)
+                resolved_provider = str(runtime_kwargs.get("provider") or provider_id or "").strip()
+
+                model_ids = fetch_api_models(
+                    runtime_kwargs.get("api_key"),
+                    runtime_kwargs.get("base_url"),
+                ) or []
+                if not model_ids:
+                    model_ids = provider_model_ids(resolved_provider)
+
+                if resolved_provider == active_provider and active_default_model:
+                    model_ids.append(active_default_model)
+
+                for agent_model in self._dedupe_model_ids(model_ids):
+                    records.append(
+                        {
+                            "public_model_id": f"{resolved_provider}/{agent_model}",
+                            "provider": resolved_provider,
+                            "agent_model": agent_model,
+                            "runtime_kwargs": dict(runtime_kwargs),
+                        }
+                    )
         except Exception as exc:
-            logger.debug("Could not discover served model ids for provider %s: %s", provider, exc)
+            logger.debug("Could not discover served model records for /v1/models: %s", exc)
 
-        if default_model:
-            model_ids.append(default_model)
+        return self._dedupe_model_records(records)
 
-        return self._dedupe_model_ids(model_ids)
+    def _get_served_model_ids(self) -> List[str]:
+        """Return provider-qualified requestable model ids for configured providers."""
+        return [record["public_model_id"] for record in self._get_served_model_records()]
 
-    def _resolve_request_model(self, requested_model: Optional[str]) -> Dict[str, str]:
+    def _resolve_request_model(self, requested_model: Optional[str]) -> Dict[str, Any]:
         """Resolve a request model into the concrete runtime model Hermes should use."""
         requested = str(requested_model or "").strip()
 
         if not requested or requested == "hermes-agent":
             default_model = ""
+            runtime_kwargs: Dict[str, Any] = {}
             try:
                 context = self._runtime_model_context()
                 default_model = str(context.get("default_model") or "").strip()
+                runtime_kwargs = dict(context.get("runtime_kwargs") or {})
             except Exception:
                 default_model = ""
             return {
                 "requested_model": "hermes-agent",
                 "agent_model": default_model or "hermes-agent",
+                "agent_runtime_kwargs": runtime_kwargs,
             }
 
-        served_model_ids = set(self._get_served_model_ids())
-        if requested not in served_model_ids:
+        record_by_public_id = {
+            record["public_model_id"]: record for record in self._get_served_model_records()
+        }
+        if requested not in record_by_public_id:
             raise ValueError(f"Unknown or inactive model '{requested}' for this Hermes API server.")
 
+        record = record_by_public_id[requested]
         return {
             "requested_model": requested,
-            "agent_model": requested,
+            "agent_model": str(record.get("agent_model") or requested).strip(),
+            "agent_runtime_kwargs": dict(record.get("runtime_kwargs") or {}),
         }
 
     @staticmethod
@@ -608,7 +666,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
-        model: Optional[str] = None,    ) -> Any:
+        model: Optional[str] = None,
+        runtime_kwargs_override: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
 
@@ -622,7 +682,9 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         context = self._runtime_model_context()
-        runtime_kwargs = context["runtime_kwargs"]
+        runtime_kwargs = dict(context["runtime_kwargs"])
+        if runtime_kwargs_override:
+            runtime_kwargs.update(runtime_kwargs_override)
         resolved_model = model or context.get("default_model") or ""
 
         user_config = _load_gateway_config()
@@ -690,15 +752,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         model_cards = [self._model_card("hermes-agent", owned_by="hermes")]
-        try:
-            context = self._runtime_model_context()
-            provider = str(context.get("provider") or "hermes").strip() or "hermes"
-        except Exception:
-            provider = "hermes"
 
-        for model_id in self._get_served_model_ids():
-            if model_id == "hermes-agent":
+        for record in self._get_served_model_records():
+            model_id = str(record.get("public_model_id") or "").strip()
+            if not model_id or model_id == "hermes-agent":
                 continue
+            provider = str(record.get("provider") or "hermes").strip() or "hermes"
             model_cards.append(self._model_card(model_id, owned_by=provider))
 
         return web.json_response({
@@ -870,6 +929,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 agent_model=resolved_model["agent_model"],
+                agent_runtime_kwargs=resolved_model.get("agent_runtime_kwargs"),
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
@@ -888,6 +948,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 agent_model=resolved_model["agent_model"],
+                agent_runtime_kwargs=resolved_model.get("agent_runtime_kwargs"),
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1679,6 +1740,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 agent_model=resolved_model["agent_model"],
+                agent_runtime_kwargs=resolved_model.get("agent_runtime_kwargs"),
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2098,6 +2160,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         agent_model: Optional[str] = None,
+        agent_runtime_kwargs: Optional[Dict[str, Any]] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2122,6 +2185,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 model=agent_model,
+                runtime_kwargs_override=agent_runtime_kwargs,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
