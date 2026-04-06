@@ -27,6 +27,22 @@ from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
+def resolve_custom_api_key(entry: dict) -> str:
+    """Resolve API key from a custom_providers entry.
+
+    Supports ``api_key_env`` (environment variable name) as an alternative to
+    the literal ``api_key`` field.  When both are present, ``api_key_env`` wins
+    if it resolves to a usable secret, otherwise the literal ``api_key`` is
+    used as a fallback to support incremental migration.
+    """
+    env_var = (entry.get("api_key_env") or "").strip()
+    if env_var:
+        env_value = os.environ.get(env_var, "").strip()
+        if has_usable_secret(env_value):
+            return env_value
+    return str(entry.get("api_key", "") or "").strip()
+
+
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
@@ -283,7 +299,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": resolve_custom_api_key(entry),
         }
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
@@ -317,7 +333,7 @@ def _resolve_named_custom_runtime(
 
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
+        custom_provider.get("api_key", ""),  # already resolved by _get_named_custom_provider
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
     ]
