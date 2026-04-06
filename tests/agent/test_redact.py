@@ -157,6 +157,18 @@ class TestTelegramTokens:
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
 
+    def test_large_payload_with_telegram_token_still_redacts(self):
+        text = ("x" * 5000) + "\nbot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345\n" + ("y" * 5000)
+        result = redact_sensitive_text(text)
+        assert "ABCDEfghij" not in result
+
+
+class TestSendGridTokens:
+    def test_large_payload_with_sendgrid_token_still_redacts(self):
+        text = ("x" * 5000) + "\nSG.ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890\n" + ("y" * 5000)
+        result = redact_sensitive_text(text)
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890" not in result
+
 
 class TestPassthrough:
     def test_empty_string(self):
@@ -171,6 +183,10 @@ class TestPassthrough:
     def test_non_string_input_dict_coerced_and_redacted(self):
         result = redact_sensitive_text({"token": "sk-proj-abc123def456ghi789jkl012"})
         assert "abc123def456" not in result
+
+    def test_large_benign_text_fast_path(self):
+        text = "y" * 40000
+        assert redact_sensitive_text(text) == text
 
     def test_normal_text_unchanged(self):
         text = "Hello world, this is a normal log message with no secrets."
