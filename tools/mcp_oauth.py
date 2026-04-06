@@ -86,7 +86,7 @@ class HermesTokenStorage:
             return None
 
     async def set_tokens(self, tokens) -> None:
-        self._write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
+        self._write_json(self._tokens_path(), tokens.model_dump(mode="json", exclude_none=True))
 
     async def get_client_info(self):
         data = self._read_json(self._client_path())
@@ -99,7 +99,7 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info) -> None:
-        self._write_json(self._client_path(), client_info.model_dump(exclude_none=True))
+        self._write_json(self._client_path(), client_info.model_dump(mode="json", exclude_none=True))
 
     # -- helpers --
 
