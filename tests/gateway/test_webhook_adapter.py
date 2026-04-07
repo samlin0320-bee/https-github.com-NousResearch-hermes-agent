@@ -597,7 +597,6 @@ class TestDeliveryCleanup:
         adapter._delivery_info[chat_id] = {
             "deliver": "log",
             "deliver_extra": {},
-            "payload": {"x": 1},
         }
 
         result = await adapter.send(chat_id, "Agent response here")
