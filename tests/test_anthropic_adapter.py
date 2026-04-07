@@ -165,6 +165,22 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
 
+    def test_reports_hermes_oauth_source(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            lambda: {
+                "accessToken": "hermes-oauth-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            },
+        )
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        assert get_anthropic_token_source("hermes-oauth-token") == "hermes_oauth_credentials"
+
     def test_reports_claude_json_primary_key_source(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
@@ -211,6 +227,22 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-test-token"
 
+    def test_falls_back_to_hermes_oauth_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            lambda: {
+                "accessToken": "hermes-auto-token",
+                "refreshToken": "refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            },
+        )
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        assert resolve_anthropic_token() == "hermes-auto-token"
+
     def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
@@ -224,8 +256,26 @@ class TestResolveAnthropicToken:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
+        monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "cc-auto-token"
+
+    def test_prefers_refreshable_hermes_oauth_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            lambda: {
+                "accessToken": "hermes-auto-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            },
+        )
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        assert resolve_anthropic_token() == "hermes-auto-token"
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -240,6 +290,7 @@ class TestResolveAnthropicToken:
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
+        monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() == "cc-auto-token"
@@ -372,6 +423,32 @@ class TestResolveWithRefresh:
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
+
+    def test_falls_back_to_api_key_when_both_refreshable_stores_are_expired_and_refresh_fails(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-fallback-key")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        expired_hermes_creds = {
+            "accessToken": "expired-hermes-token",
+            "refreshToken": "hermes-refresh-token",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        expired_claude_creds = {
+            "accessToken": "expired-claude-token",
+            "refreshToken": "claude-refresh-token",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+
+        with patch("agent.anthropic_adapter.read_hermes_oauth_credentials", return_value=expired_hermes_creds), \
+             patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=expired_claude_creds), \
+             patch("agent.anthropic_adapter.refresh_hermes_oauth_token", return_value=None) as hermes_refresh, \
+             patch("agent.anthropic_adapter._refresh_oauth_token", return_value=None) as claude_refresh:
+            result = resolve_anthropic_token()
+
+        assert result == "sk-ant-api03-fallback-key"
+        hermes_refresh.assert_called_once()
+        claude_refresh.assert_called_once()
 
 
 class TestRunOauthSetupToken:
