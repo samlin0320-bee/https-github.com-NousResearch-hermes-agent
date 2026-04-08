@@ -27,3 +27,31 @@ def test_matrix_extra_linux_only_in_all():
         if "matrix" in dep and "linux" in dep
     ]
     assert linux_gated, "expected hermes-agent[matrix] with sys_platform=='linux' marker in [all]"
+
+
+def test_first_party_project_install_flows_do_not_use_all_extras():
+    """Hermes-owned install/update docs should use the curated ``--extra all``
+    flow, not ``--all-extras``."""
+    repo_root = Path(__file__).resolve().parents[1]
+    owned_paths = [
+        "README.md",
+        "CONTRIBUTING.md",
+        ".github/workflows/tests.yml",
+        "scripts/install.sh",
+        "scripts/install.ps1",
+        "setup-hermes.sh",
+        "website/docs/getting-started/installation.md",
+        "website/docs/getting-started/updating.md",
+        "website/docs/guides/use-mcp-with-hermes.md",
+        "website/docs/user-guide/features/mcp.md",
+        "website/docs/reference/faq.md",
+        "website/docs/developer-guide/contributing.md",
+    ]
+
+    offenders = []
+    for rel_path in owned_paths:
+        content = (repo_root / rel_path).read_text()
+        if "uv sync --locked --all-extras" in content:
+            offenders.append(rel_path)
+
+    assert offenders == []

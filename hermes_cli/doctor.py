@@ -227,7 +227,16 @@ def run_doctor(args):
             check_ok(name)
         except ImportError:
             check_fail(name, "(missing)")
-            issues.append(f"Install {name}: {_python_install_cmd()} {module}")
+            if _is_termux():
+                issues.append(
+                    f"Repair Hermes project environment ({name} missing): "
+                    "python -m pip install -e '.[termux]' -c constraints-termux.txt"
+                )
+            else:
+                issues.append(
+                    f"Repair Hermes project environment ({name} missing): "
+                    "uv sync --locked --extra all"
+                )
     
     for module, name in optional_packages:
         try:

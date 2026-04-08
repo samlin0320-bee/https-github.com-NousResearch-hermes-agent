@@ -100,57 +100,59 @@ If you already cloned without `--recurse-submodules`:
 git submodule update --init --recursive
 ```
 
-### Step 2: Install uv & Create Virtual Environment
+### Step 2: Install uv
 
 ```bash
 # Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create venv with Python 3.11 (uv downloads it if not present — no sudo needed)
-uv venv venv --python 3.11
 ```
 
 :::tip
-You do **not** need to activate the venv to use `hermes`. The entry point has a hardcoded shebang pointing to the venv Python, so it works globally once symlinked.
+Hermes is a normal `pyproject.toml`-based uv project with a checked-in `uv.lock`, so you do **not** need to create or activate a virtual environment manually. `uv sync` will create the project environment automatically at `.venv` and download a compatible Python if needed.
 :::
 
-### Step 3: Install Python Dependencies
+### Step 3: Sync Python Dependencies
 
 ```bash
-# Tell uv which venv to install into
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Install with all extras
-uv pip install -e ".[all]"
+# Sync from the checked-in lockfile and install all Hermes extras
+uv sync --locked --extra all
 ```
 
 If you only want the core agent (no Telegram/Discord/cron support):
 ```bash
-uv pip install -e "."
+uv sync --locked
 ```
+
+If you specifically want to force Python 3.11 instead of letting uv pick any compatible version, add `--python 3.11`:
+
+```bash
+uv sync --locked --extra all --python 3.11
+```
+
+`--extra all` uses Hermes's curated `[all]` extra. Do not replace it with `--all-extras` in Hermes install docs: `--all-extras` means every declared optional dependency, which is broader than the supported default install.
 
 <details>
 <summary><strong>Optional extras breakdown</strong></summary>
 
 | Extra | What it adds | Install command |
 |-------|-------------|-----------------|
-| `all` | Everything below | `uv pip install -e ".[all]"` |
-| `messaging` | Telegram & Discord gateway | `uv pip install -e ".[messaging]"` |
-| `cron` | Cron expression parsing for scheduled tasks | `uv pip install -e ".[cron]"` |
-| `cli` | Terminal menu UI for setup wizard | `uv pip install -e ".[cli]"` |
-| `modal` | Modal cloud execution backend | `uv pip install -e ".[modal]"` |
-| `tts-premium` | ElevenLabs premium voices | `uv pip install -e ".[tts-premium]"` |
-| `voice` | CLI microphone input + audio playback | `uv pip install -e ".[voice]"` |
-| `pty` | PTY terminal support | `uv pip install -e ".[pty]"` |
+| `all` | Everything below | `uv sync --locked --extra all` |
+| `messaging` | Telegram & Discord gateway | `uv sync --locked --extra messaging` |
+| `cron` | Cron expression parsing for scheduled tasks | `uv sync --locked --extra cron` |
+| `cli` | Terminal menu UI for setup wizard | `uv sync --locked --extra cli` |
+| `modal` | Modal cloud execution backend | `uv sync --locked --extra modal` |
+| `tts-premium` | ElevenLabs premium voices | `uv sync --locked --extra tts-premium` |
+| `voice` | CLI microphone input + audio playback | `uv sync --locked --extra voice` |
+| `pty` | PTY terminal support | `uv sync --locked --extra pty` |
 | `termux` | Tested Android / Termux bundle (`cron`, `cli`, `pty`, `mcp`, `honcho`, `acp`) | `python -m pip install -e ".[termux]" -c constraints-termux.txt` |
-| `honcho` | AI-native memory (Honcho integration) | `uv pip install -e ".[honcho]"` |
-| `mcp` | Model Context Protocol support | `uv pip install -e ".[mcp]"` |
-| `homeassistant` | Home Assistant integration | `uv pip install -e ".[homeassistant]"` |
-| `acp` | ACP editor integration support | `uv pip install -e ".[acp]"` |
-| `slack` | Slack messaging | `uv pip install -e ".[slack]"` |
-| `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
+| `honcho` | AI-native memory (Honcho integration) | `uv sync --locked --extra honcho` |
+| `mcp` | Model Context Protocol support | `uv sync --locked --extra mcp` |
+| `homeassistant` | Home Assistant integration | `uv sync --locked --extra homeassistant` |
+| `acp` | ACP editor integration support | `uv sync --locked --extra acp` |
+| `slack` | Slack messaging | `uv sync --locked --extra slack` |
+| `dev` | pytest & test utilities | `uv sync --locked --extra dev` |
 
-You can combine extras: `uv pip install -e ".[messaging,cron]"`
+You can combine extras: `uv sync --locked --extra messaging --extra cron`
 
 :::tip Termux users
 `.[all]` is not currently available on Android because the `voice` extra pulls `faster-whisper`, which depends on `ctranslate2` wheels that are not published for Android. Use `.[termux]` for the tested mobile install path, then add individual extras only as needed.
@@ -166,6 +168,8 @@ uv pip install -e "./tinker-atropos"
 ```
 
 Both are optional — if you skip them, the corresponding toolsets simply won't be available.
+
+`uv pip` is still reasonable here because `tinker-atropos` is a separate local package, not part of Hermes's locked dependency set.
 
 ### Step 5: Install Node.js Dependencies (Optional)
 
@@ -210,7 +214,7 @@ hermes config set OPENROUTER_API_KEY sk-or-v1-your-key-here
 
 ```bash
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+ln -sf "$(pwd)/.venv/bin/hermes" ~/.local/bin/hermes
 ```
 
 If `~/.local/bin` isn't on your PATH, add it to your shell config:
@@ -255,12 +259,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Install everything
-uv pip install -e ".[all]"
+# Sync everything
+uv sync --locked --extra all
 uv pip install -e "./tinker-atropos"
 npm install  # optional, for browser tools and WhatsApp
 
@@ -272,7 +272,7 @@ echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
 
 # Make hermes available globally
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+ln -sf "$(pwd)/.venv/bin/hermes" ~/.local/bin/hermes
 
 # Verify
 hermes doctor
