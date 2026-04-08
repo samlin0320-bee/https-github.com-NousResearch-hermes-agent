@@ -9,7 +9,7 @@ Usage: python3 bili_cast.py <bilibili_url> [tv_ip] [format_selector] [workers]
 Examples:
   python3 bili_cast.py https://live.bilibili.com/103
   python3 bili_cast.py https://b23.tv/tyRD3rx
-  python3 bili_cast.py https://b23.tv/xxxxx <TV_IP> 30120+30280 20
+  python3 bili_cast.py https://b23.tv/xxxxx 192.168.1.102 30120+30280 20
 """
 import sys
 import os
@@ -20,7 +20,7 @@ import re
 import socket
 from pathlib import Path
 
-DEFAULT_TV_IP = None  # Auto-discovered via tv_discovery.py
+DEFAULT_TV_IP = '192.168.1.103'
 
 # Import shared TV discovery
 sys.path.insert(0, str(Path(__file__).parent))
@@ -149,15 +149,46 @@ def cast_video(url: str, tv_ip: str, format_selector: str, workers: int):
             raise RuntimeError(f'yt-dlp failed: {r.stderr.strip()[:300]}')
 
         data = json.loads(r.stdout)
-        # Cap at 1080p for C8 — 4K AVC (30120) uses High@L5.1+ which C8 can't decode
-        avc = sorted(
-            [f for f in data.get('formats', [])
-             if str(f.get('vcodec', '')).startswith('avc1')
-             and (f.get('height') or 0) > 0
-             and (f.get('height') or 0) <= 1080],
-            key=lambda f: (f.get('height', 0), f.get('tbr', 0)), reverse=True
-        )
-        best_vid = avc[0]['format_id'] if avc else '30080'
+        # C8 codec matrix (α9 Gen1 SoC, confirmed 2026-04):
+        #   AVC/H.264:  4K ≤ 30fps ✅   4K @ 60fps ❌ (SoC limit, not profile/level/bitrate)
+        #   HEVC/H.265: 4K ≤ 60fps ✅   (Main / Main10 both OK, up to L5.1)
+        # Strategy: prefer HEVC at 4K60, otherwise prefer AVC (better compat + our
+        # mp4_proxy is battle-tested on AVC).
+        video_fmts = [f for f in data.get('formats', [])
+                      if (f.get('height') or 0) > 0 and f.get('vcodec') and f.get('vcodec') != 'none']
+
+        def _is_avc(f): return str(f.get('vcodec','')).startswith('avc1')
+        def _is_hevc(f): return any(str(f.get('vcodec','')).startswith(p) for p in ('hev1','hvc1','hev','hvc'))
+        def _fps(f): return f.get('fps') or 0
+        def _h(f):   return f.get('height') or 0
+
+        # Build candidate lists sorted by quality
+        avc = sorted([f for f in video_fmts if _is_avc(f)],
+                     key=lambda f: (_h(f), _fps(f), f.get('tbr', 0)), reverse=True)
+        hevc = sorted([f for f in video_fmts if _is_hevc(f)],
+                      key=lambda f: (_h(f), _fps(f), f.get('tbr', 0)), reverse=True)
+
+        best_vid = None
+        # Rule 1: if best AVC is 4K but > 30fps, try HEVC at same resolution/fps
+        if avc and _h(avc[0]) >= 2160 and _fps(avc[0]) > 30:
+            hevc_4k60 = next((f for f in hevc if _h(f) >= 2160 and _fps(f) >= 50), None)
+            if hevc_4k60:
+                best_vid = hevc_4k60['format_id']
+                note = 'HEVC 4K60 (C8 AVC cannot do 4K60)'
+            else:
+                # HEVC 4K60 unavailable → fall back to AVC 1080P60
+                avc_1080_60 = next((f for f in avc if _h(f) == 1080 and _fps(f) >= 50), None)
+                if avc_1080_60:
+                    best_vid = avc_1080_60['format_id']
+                    note = 'AVC 1080P60 (no HEVC 4K60 available)'
+
+        # Rule 2: default — best AVC
+        if not best_vid and avc:
+            best_vid = avc[0]['format_id']
+            note = f'AVC {_h(avc[0])}p{int(_fps(avc[0]))}'
+        if not best_vid:
+            best_vid = '30080'
+            note = 'AVC 1080P (fallback)'
 
         aud = sorted(
             [f for f in data.get('formats', [])
@@ -167,7 +198,7 @@ def cast_video(url: str, tv_ip: str, format_selector: str, workers: int):
         best_aud = aud[0]['format_id'] if aud else '30280'
 
         format_selector = f'{best_vid}+{best_aud}'
-        print(f'   Auto format: {format_selector} (best AVC)', flush=True)
+        print(f'   Auto format: {format_selector} ({note})', flush=True)
 
     # Delegate to mp4_proxy_v3.py (replaces this process)
     script = str(Path(__file__).parent / 'mp4_proxy_v3.py')
@@ -189,7 +220,7 @@ def main():
         print('Examples:', flush=True)
         print('  python3 bili_cast.py https://live.bilibili.com/103', flush=True)
         print('  python3 bili_cast.py https://b23.tv/tyRD3rx', flush=True)
-        print('  python3 bili_cast.py https://b23.tv/xxx <TV_IP> 30120+30280 20', flush=True)
+        print('  python3 bili_cast.py https://b23.tv/xxx 192.168.1.102 30120+30280 20', flush=True)
         sys.exit(1)
 
     url = sys.argv[1]

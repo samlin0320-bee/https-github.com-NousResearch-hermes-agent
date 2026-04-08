@@ -13,7 +13,7 @@ import concurrent.futures
 from pathlib import Path
 
 
-DEFAULT_TV_IP = None  # Set to your TV's IP, or leave None for auto-discovery
+DEFAULT_TV_IP = '192.168.1.103'
 CONFIG_PATH = Path.home() / '.hermes' / 'smart_home' / 'lgtv.yaml'
 KEYS_PATH = Path.home() / '.hermes' / 'smart_home' / 'lgtv_keys.json'
 
@@ -52,7 +52,7 @@ def _discover_ssdp(local_ip: str = None, timeout: float = 3.0) -> list[str]:
     if not local_ip:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
+            s.connect(('192.168.1.1', 80))
             local_ip = s.getsockname()[0]
             s.close()
         except Exception:
@@ -105,7 +105,7 @@ def _scan_subnet(prefix: str) -> list[str]:
     return found
 
 
-def _read_config_tv(tv_name: str = None) -> dict | None:
+def _read_config_tv(tv_name: str = 'Living Room TV') -> dict | None:
     """Read TV entry from lgtv.yaml config. Returns dict with 'ip', 'mac', 'name'."""
     if not CONFIG_PATH.exists():
         return None
@@ -178,7 +178,7 @@ def _update_config_ip(old_ip: str, new_ip: str):
             pass
 
 
-def resolve_tv_ip(tv_ip: str | None = None, tv_name: str = None) -> str:
+def resolve_tv_ip(tv_ip: str | None = None, tv_name: str = 'Living Room TV') -> str:
     """Resolve and verify TV IP. Always probes before returning.
 
     1. If tv_ip given, probe it first
@@ -243,21 +243,61 @@ def resolve_tv_ip(tv_ip: str | None = None, tv_name: str = None) -> str:
 
 
 def get_tv_client(tv_ip: str):
-    """Connect to LG TV and return WebOSClient."""
+    """Connect to LG TV and return WebOSClient.
+
+    Reuses the stored client_key for this IP if present. If the TV prompts
+    for pairing (new IP, key lost, or key invalidated), the newly-issued
+    key is persisted back to lgtv_keys.json so future connections are silent.
+
+    Legacy cross-IP key reuse: if no key exists for this IP but another IP's
+    key is present, we try it first — webOS accepts the same client_key on
+    the same physical TV, so DHCP drift doesn't force re-pairing.
+    """
     sys.path.insert(0, os.path.expanduser('~/.hermes/hermes-agent'))
     from pywebostv.connection import WebOSClient
 
     keys = json.loads(KEYS_PATH.read_text()) if KEYS_PATH.exists() else {}
-    store = keys.get(tv_ip, {})
-    if isinstance(store, str):
-        store = {'client_key': store}
-    elif not isinstance(store, dict):
-        store = {}
 
+    def _normalize(raw):
+        if isinstance(raw, str):
+            return {'client_key': raw}
+        if isinstance(raw, dict):
+            return dict(raw)
+        return {}
+
+    store = _normalize(keys.get(tv_ip))
+
+    # Fallback: if we have no key for this IP, try any existing client_key
+    # from the keys file (other IPs or the legacy top-level "client_key").
+    # webOS binds the key to the TV hardware, not the IP, so this silently
+    # survives DHCP drift.
+    if not store.get('client_key'):
+        candidates = []
+        for k, v in keys.items():
+            if k == tv_ip:
+                continue
+            n = _normalize(v)
+            if n.get('client_key'):
+                candidates.append(n['client_key'])
+        if candidates:
+            store = {'client_key': candidates[0]}
+
+    key_before = store.get('client_key')
     c = WebOSClient(tv_ip, secure=True)
     c.connect()
-    for x in c.register(store):
+    for _ in c.register(store):
         pass
+    key_after = store.get('client_key')
+
+    # Save if the key changed or the IP entry is missing
+    if key_after and (key_after != key_before or tv_ip not in keys):
+        keys[tv_ip] = store
+        try:
+            KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            KEYS_PATH.write_text(json.dumps(keys))
+        except Exception as e:
+            print(f'   ⚠ Could not save TV key to {KEYS_PATH}: {e}', flush=True)
+
     return c
 
 
