@@ -159,6 +159,7 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
                 ],
+                "post_config_env": {"WEB_SEARCH_BACKEND": "firecrawl"},
             },
             {
                 "name": "Firecrawl Self-Hosted",
@@ -166,6 +167,15 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
+                "post_config_env": {"WEB_SEARCH_BACKEND": "firecrawl"},
+            },
+            {
+                "name": "SearchHive",
+                "tag": "AI-powered search, scrape, and deep research",
+                "env_vars": [
+                    {"key": "SEARCHHIVE_API_KEY", "prompt": "SearchHive API key", "url": "https://searchhive.dev"},
+                ],
+                "post_config_env": {"WEB_SEARCH_BACKEND": "searchhive"},
             },
         ],
     },
@@ -649,6 +659,11 @@ def _configure_provider(provider: dict, config: dict):
     if provider.get("post_setup") and all_configured:
         _run_post_setup(provider["post_setup"])
 
+    # Save post_config_env vars (e.g. WEB_SEARCH_BACKEND)
+    if provider.get("post_config_env") and all_configured:
+        for key, value in provider["post_config_env"].items():
+            save_env_value(key, value)
+
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
 
@@ -796,6 +811,11 @@ def _reconfigure_provider(provider: dict, config: dict):
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
+
+    # Save post_config_env vars
+    if provider.get("post_config_env"):
+        for key, value in provider["post_config_env"].items():
+            save_env_value(key, value)
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")
