@@ -137,6 +137,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "stepfun": [
+        "step-3.5-flash",
+        "step-3.5-flash-2603",
+        "step-3",
+        "step-3-agent-lite",
+        "step-2x-large",
+        "step-2-mini",
+    ],
     "moonshot": [
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -470,6 +478,7 @@ _PROVIDER_LABELS = {
     "gemini": "Google AI Studio",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
+    "stepfun": "StepFun Coding Plan",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
@@ -499,6 +508,9 @@ _PROVIDER_ALIASES = {
     "google-ai-studio": "gemini",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "step": "stepfun",
+    "step-fun": "stepfun",
+    "stepfun-coding-plan": "stepfun",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -762,7 +774,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "zai", "kimi-coding", "stepfun", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
@@ -1050,6 +1062,19 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
             creds = resolve_nous_runtime_credentials()
             if creds:
                 live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "stepfun":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("stepfun")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
                 if live:
                     return live
         except Exception:

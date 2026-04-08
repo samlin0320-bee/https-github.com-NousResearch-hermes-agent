@@ -81,6 +81,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "stepfun": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("STEPFUN_API_KEY",),
+        base_url_override="https://api.stepfun.ai/step_plan/v1",
+        base_url_env_var="STEPFUN_BASE_URL",
+    ),
     "minimax": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="MINIMAX_BASE_URL",
@@ -165,6 +171,9 @@ ALIASES: Dict[str, str] = {
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+    "step": "stepfun",
+    "step-fun": "stepfun",
+    "stepfun-coding-plan": "stepfun",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -231,6 +240,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "stepfun": "StepFun Coding Plan",
     "local": "Local endpoint",
 }
 
@@ -356,6 +366,7 @@ LABELS: Dict[str, str] = {
     "anthropic": "Anthropic",
     "zai": "Z.AI / GLM",
     "kimi-for-coding": "Kimi / Moonshot",
+    "stepfun": "StepFun Coding Plan",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "deepseek": "DeepSeek",
@@ -373,6 +384,8 @@ LABELS: Dict[str, str] = {
     "copilot": "GitHub Copilot",
     "kimi-coding": "Kimi / Moonshot",
     "opencode-zen": "OpenCode Zen",
+    "step": "StepFun Coding Plan",
+    "stepfun-coding-plan": "StepFun Coding Plan",
 }
 
 
