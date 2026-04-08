@@ -587,6 +587,26 @@ def resolve_runtime_provider(
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
 
+    # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
+    # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
+    # return provider="custom" with chat_completions api_mode and no valid key).
+    # Instead, use the Azure key directly with anthropic_messages api_mode.
+    _eff_base = (explicit_base_url or "").strip()
+    if requested_provider == "anthropic" and "azure.com" in _eff_base:
+        _azure_key = (
+            (explicit_api_key or "").strip()
+            or os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
+            or os.getenv("ANTHROPIC_API_KEY", "").strip()
+        )
+        return {
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url": _eff_base.rstrip("/"),
+            "api_key": _azure_key,
+            "source": "azure-explicit",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -729,13 +749,6 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
-        from agent.anthropic_adapter import resolve_anthropic_token
-        token = resolve_anthropic_token()
-        if not token:
-            raise AuthError(
-                "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                "run 'claude setup-token', or authenticate with 'claude /login'."
-            )
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic
         # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
@@ -744,6 +757,33 @@ def resolve_runtime_provider(
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
+
+        # For Azure AI Foundry endpoints, use ANTHROPIC_API_KEY directly —
+        # Claude Code OAuth tokens (sk-ant-oat01) are not accepted by Azure.
+        # Azure keys don't start with "sk-ant-" so resolve_anthropic_token()
+        # would find the Claude Code OAuth token first (priority 3) and return
+        # that instead, causing 401s. Detect Azure endpoints and use the env
+        # key directly to bypass the OAuth priority chain.
+        _is_azure_endpoint = "azure.com" in base_url.lower() or (
+            cfg_base_url and "azure.com" in cfg_base_url.lower()
+        )
+        if _is_azure_endpoint:
+            token = (
+                os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
+                or os.getenv("ANTHROPIC_API_KEY", "").strip()
+            )
+            if not token:
+                raise AuthError(
+                    "No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY."
+                )
+        else:
+            from agent.anthropic_adapter import resolve_anthropic_token
+            token = resolve_anthropic_token()
+            if not token:
+                raise AuthError(
+                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
+                    "run 'claude setup-token', or authenticate with 'claude /login'."
+                )
         return {
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
