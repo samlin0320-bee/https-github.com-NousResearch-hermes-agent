@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+DEFAULT_MODEL_NAME = os.getenv("API_SERVER_MODEL_NAME", "hermes-agent")
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 
@@ -456,10 +457,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        return web.json_response({"status": "ok", "platform": DEFAULT_MODEL_NAME})
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
+        """GET /v1/models — return the configured model name."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -468,12 +469,12 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "data": [
                 {
-                    "id": "hermes-agent",
+                    "id": DEFAULT_MODEL_NAME,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "hermes",
                     "permission": [],
-                    "root": "hermes-agent",
+                    "root": DEFAULT_MODEL_NAME,
                     "parent": None,
                 }
             ],
@@ -546,7 +547,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", "hermes-agent")
+        model_name = body.get("model", DEFAULT_MODEL_NAME)
         created = int(time.time())
 
         if stream:
@@ -923,7 +924,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", "hermes-agent"),
+            "model": body.get("model", DEFAULT_MODEL_NAME),
             "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
