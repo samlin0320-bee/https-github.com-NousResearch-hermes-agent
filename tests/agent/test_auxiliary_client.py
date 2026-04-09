@@ -43,14 +43,15 @@ def codex_auth_dir(tmp_path, monkeypatch):
     auth_file = codex_dir / "auth.json"
     auth_file.write_text(json.dumps({
         "tokens": {
-            "access_token": "codex-test-token-abc123",
-            "refresh_token": "codex-refresh-xyz",
+            "access_token": "codex-...c123",
+            "refresh_token": "***",
         }
     }))
     monkeypatch.setattr(
         "agent.auxiliary_client._read_codex_access_token",
         lambda: "codex-test-token-abc123",
     )
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda provider: (False, None))
     return codex_dir
 
 
@@ -89,6 +90,7 @@ class TestReadCodexAccessToken:
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda provider: (False, None))
         result = _read_codex_access_token()
         assert result is None
 
@@ -141,11 +143,12 @@ class TestReadCodexAccessToken:
             "version": 1,
             "providers": {
                 "openai-codex": {
-                    "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
+                    "tokens": {"access_token": expired_jwt, "refresh_token": "***"},
                 },
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda provider: (False, None))
         result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"
 
@@ -586,6 +589,7 @@ class TestGetTextAuxiliaryClient:
 
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None, None)), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
@@ -625,6 +629,8 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
