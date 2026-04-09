@@ -434,7 +434,10 @@ class TestSyncTurn:
         if p._sync_thread:
             p._sync_thread.join(timeout=5.0)
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert item["tags"] == ["conv", "session1"]
+        # User tags + session lineage tag
+        assert "conv" in item["tags"]
+        assert "session1" in item["tags"]
+        assert "session:test-session" in item["tags"]
 
     def test_sync_turn_uses_aretain_batch(self, provider):
         """sync_turn should use aretain_batch with retain_async."""
@@ -443,7 +446,8 @@ class TestSyncTurn:
             provider._sync_thread.join(timeout=5.0)
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
-        assert call_kwargs["document_id"] == "test-session"
+        # document_id is session_id + per-process timestamp suffix
+        assert call_kwargs["document_id"].startswith("test-session-")
         assert call_kwargs["retain_async"] is True
         assert len(call_kwargs["items"]) == 1
         assert call_kwargs["items"][0]["context"] == "conversation between Hermes Agent and the User"
@@ -501,12 +505,70 @@ class TestSyncTurn:
         assert "turn4-user" in content
 
     def test_sync_turn_passes_document_id(self, provider):
-        """sync_turn should pass session_id as document_id for dedup."""
+        """sync_turn should pass document_id (session_id + per-startup ts)."""
         provider.sync_turn("hello", "hi")
         if provider._sync_thread:
             provider._sync_thread.join(timeout=5.0)
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
-        assert call_kwargs["document_id"] == "test-session"
+        # Format: {session_id}-{YYYYMMDD_HHMMSS_microseconds}
+        assert call_kwargs["document_id"].startswith("test-session-")
+        assert call_kwargs["document_id"] == provider._document_id
+
+    def test_resume_creates_new_document(self, tmp_path, monkeypatch):
+        """Resuming a session (re-initializing) gets a new document_id
+        so previously stored content is not overwritten."""
+        config = {"mode": "cloud", "apiKey": "k", "api_url": "http://x", "bank_id": "b"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p1 = HindsightMemoryProvider()
+        p1.initialize(session_id="resumed-session", hermes_home=str(tmp_path), platform="cli")
+
+        # Sleep just enough that the microsecond timestamp differs
+        import time
+        time.sleep(0.001)
+
+        p2 = HindsightMemoryProvider()
+        p2.initialize(session_id="resumed-session", hermes_home=str(tmp_path), platform="cli")
+
+        # Same session, but each process gets its own document_id
+        assert p1._document_id != p2._document_id
+        assert p1._document_id.startswith("resumed-session-")
+        assert p2._document_id.startswith("resumed-session-")
+
+    def test_sync_turn_session_tag(self, provider):
+        """Each retain should be tagged with session:<id> for filtering."""
+        provider.sync_turn("hello", "hi")
+        if provider._sync_thread:
+            provider._sync_thread.join(timeout=5.0)
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "session:test-session" in item["tags"]
+
+    def test_sync_turn_parent_session_tag(self, tmp_path, monkeypatch):
+        """When initialized with parent_session_id, parent tag is added."""
+        config = {"mode": "cloud", "apiKey": "k", "api_url": "http://x", "bank_id": "b"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(
+            session_id="child-session",
+            hermes_home=str(tmp_path),
+            platform="cli",
+            parent_session_id="parent-session",
+        )
+        p._client = _make_mock_client()
+        p.sync_turn("hello", "hi")
+        if p._sync_thread:
+            p._sync_thread.join(timeout=5.0)
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "session:child-session" in item["tags"]
+        assert "parent:parent-session" in item["tags"]
 
     def test_sync_turn_error_does_not_raise(self, provider):
         """Errors in sync_turn should be swallowed (non-blocking)."""

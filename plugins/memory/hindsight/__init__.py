@@ -201,6 +201,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = None
         self._sync_thread = None
         self._session_id = ""
+        self._parent_session_id = ""
+        self._document_id = ""
 
         # Tags
         self._tags: list[str] | None = None
@@ -468,6 +470,18 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
+        self._parent_session_id = kwargs.get("parent_session_id", "") or ""
+
+        # Compute a unique document_id for THIS process lifecycle.
+        # Reusing session_id alone caused overwrites on /resume — when the
+        # session is loaded again from disk, _session_turns starts empty
+        # and the next retain would replace the previously stored content.
+        # Adding a per-startup timestamp ensures each process gets its own
+        # document. The session_id stays in tags so all processes for the
+        # same session can still be filtered together.
+        from datetime import datetime
+        start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._document_id = f"{session_id}-{start_ts}"
 
         # Check client version and auto-upgrade if needed
         try:
@@ -745,6 +759,13 @@ class HindsightMemoryProvider(MemoryProvider):
         # Each element in _session_turns is a JSON string of that turn's messages.
         content = "[" + ",".join(self._session_turns) + "]"
 
+        # Build tags: user-configured tags + session lineage tags
+        item_tags = list(self._tags) if self._tags else []
+        if self._session_id:
+            item_tags.append(f"session:{self._session_id}")
+        if self._parent_session_id:
+            item_tags.append(f"parent:{self._parent_session_id}")
+
         def _sync():
             try:
                 client = self._get_client()
@@ -752,14 +773,15 @@ class HindsightMemoryProvider(MemoryProvider):
                     "content": content,
                     "context": self._retain_context,
                 }
-                if self._tags:
-                    item["tags"] = self._tags
-                logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
-                             self._bank_id, self._session_id, self._retain_async, len(content), len(self._session_turns))
+                if item_tags:
+                    item["tags"] = item_tags
+                logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d, tags=%s",
+                             self._bank_id, self._document_id, self._retain_async,
+                             len(content), len(self._session_turns), item_tags)
                 _run_sync(client.aretain_batch(
                     bank_id=self._bank_id,
                     items=[item],
-                    document_id=self._session_id,
+                    document_id=self._document_id,
                     retain_async=self._retain_async,
                 ))
                 logger.debug("Hindsight retain succeeded")
