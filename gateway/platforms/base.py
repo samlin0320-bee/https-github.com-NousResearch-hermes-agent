@@ -531,6 +531,10 @@ class MessageEvent:
     
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
+
+    # Optional clean text to persist in transcripts when ``text`` contains
+    # internal routing hints or restart-resume prefixes.
+    persist_user_message: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
