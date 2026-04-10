@@ -99,6 +99,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "aimlapi": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("AIMLAPI_API_KEY",),
+        base_url_override="https://api.aimlapi.com/v1",
+        base_url_env_var="AIMLAPI_BASE_URL",
+    ),
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
@@ -171,6 +178,8 @@ ALIASES: Dict[str, str] = {
     # minimax-cn
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "aiml": "aimlapi",
+    "ai-ml-api": "aimlapi",
 
     # anthropic
     "claude": "anthropic",
@@ -234,6 +243,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "local": "Local endpoint",
+    "aimlapi": "AI/ML API",
 }
 
 
@@ -338,7 +348,6 @@ def get_label(provider_id: str) -> str:
         return pdef.name
 
     return canonical
-
 
 
 def is_aggregator(provider: str) -> bool:

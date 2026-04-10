@@ -924,6 +924,7 @@ def select_provider_and_model(args=None):
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
         "gemini": "Google AI Studio",
+        "aimlapi": "AI/ML API",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
@@ -947,6 +948,7 @@ def select_provider_and_model(args=None):
     top_providers = [
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
+        ("aimlapi", "AI/ML API (300+ models, OpenAI-compatible aggregator)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("openai-codex", "OpenAI Codex"),
         ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
@@ -1077,7 +1079,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "aimlapi", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1412,7 +1414,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     models = None
     try:
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
-        models = fetch_api_models(creds["api_key"], creds["base_url"])
+        models = fetch_api_models(creds["api_key"], creds["base_url"], provider="qwen-oauth")
     except Exception:
         pass
     if not models:
@@ -1720,7 +1722,7 @@ def _model_flow_named_custom(config, provider_info):
     print()
 
     print("Fetching available models...")
-    models = fetch_api_models(api_key, base_url, timeout=8.0)
+    models = fetch_api_models(api_key, base_url, provider="custom", timeout=8.0)
 
     if models:
         default_idx = 0
@@ -2010,7 +2012,7 @@ def _model_flow_copilot(config, current_model=""):
     effective_base = pconfig.inference_base_url
 
     catalog = fetch_github_model_catalog(api_key)
-    live_models = [item.get("id", "") for item in catalog if item.get("id")] if catalog else fetch_api_models(api_key, effective_base)
+    live_models = [item.get("id", "") for item in catalog if item.get("id")] if catalog else fetch_api_models(api_key, effective_base, provider=provider_id)
     normalized_current_model = normalize_copilot_model_id(
         current_model,
         catalog=catalog,
@@ -2329,14 +2331,18 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
+    if provider_id == "aimlapi":
+        print(f"  {pconfig.name} endpoint: {effective_base}")
         print()
-        override = ""
-    if override and base_url_env:
-        save_env_value(base_url_env, override)
-        effective_base = override
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -2361,7 +2367,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
     else:
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        live_models = fetch_api_models(api_key_for_probe, effective_base, provider=provider_id)
         if live_models and len(live_models) >= len(curated):
             model_list = live_models
             print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
@@ -4321,7 +4327,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "aimlapi", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )
