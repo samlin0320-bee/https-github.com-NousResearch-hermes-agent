@@ -1,6 +1,6 @@
-# Cron parallel scheduling: orphaned in-flight recovery
+# Cron parallel execution with safe non-overlap
 
-This document describes the design that ships with the parallel cron scheduler changes.
+This document describes the shipped design for running independent cron jobs in parallel while preserving per-job non-overlap.
 
 ## Problem
 
@@ -10,7 +10,7 @@ That ownership model had a hole: if the gateway process died after claiming a jo
 
 ## Implemented design
 
-The branch fixes that by extending the ownership model instead of weakening it.
+The implementation extends the ownership model instead of weakening it.
 
 ### 1. Structured owner metadata on claim
 
@@ -67,7 +67,7 @@ That ordering is intentional. Once an orphaned claim is recovered, the next tick
 
 ## Test coverage kept with this change
 
-The regression coverage on this branch verifies:
+The regression coverage verifies:
 - dead-owner early recovery before full timeout
 - live-owner no-op
 - unknown-owner timeout fallback
@@ -76,7 +76,7 @@ The regression coverage on this branch verifies:
 - scheduler-level reclaim after restart-like conditions
 - grace-window behavior
 - stale completion discard after ownership changes
-- paused run-once behavior under the restored parallel scheduler model
+- paused run-once behavior under the parallel scheduler model
 
 ## Operational notes
 
