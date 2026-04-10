@@ -787,7 +787,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
         while not self._closing:
             try:
-                resp = await self._client.sync(timeout=30000)
+                resp = await asyncio.wait_for(
+                    self._client.sync(timeout=30000),
+                    timeout=45.0,
+                )
                 if isinstance(resp, nio.SyncError):
                     if self._closing:
                         return
@@ -971,6 +974,13 @@ class MatrixAdapter(BasePlatformAdapter):
         """Handle incoming text messages (and decrypted megolm events)."""
         import nio
 
+        logger.debug(
+            "Matrix: callback fired — event %s from %s in %s",
+            getattr(event, "event_id", "?"),
+            getattr(event, "sender", "?"),
+            room.room_id,
+        )
+
         # Ignore own messages.
         if event.sender == self._user_id:
             return
@@ -1041,6 +1051,12 @@ class MatrixAdapter(BasePlatformAdapter):
             formatted_body = source_content.get("formatted_body")
             if require_mention and not is_free_room and not in_bot_thread:
                 if not self._is_bot_mentioned(body, formatted_body):
+                    logger.debug(
+                        "Matrix: ignoring message %s in %s — no @mention "
+                        "(set MATRIX_REQUIRE_MENTION=false to disable)",
+                        getattr(event, "event_id", "?"),
+                        room.room_id,
+                    )
                     return
 
         # Strip mention from body when present (including in DMs).
@@ -1183,6 +1199,13 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_room_message_media(self, room: Any, event: Any) -> None:
         """Handle incoming media messages (images, audio, video, files)."""
         import nio
+
+        logger.debug(
+            "Matrix: media callback fired — event %s from %s in %s",
+            getattr(event, "event_id", "?"),
+            getattr(event, "sender", "?"),
+            room.room_id,
+        )
 
         # Ignore own messages.
         if event.sender == self._user_id:
@@ -1358,6 +1381,12 @@ class MatrixAdapter(BasePlatformAdapter):
             if require_mention and not is_free_room and not in_bot_thread:
                 formatted_body = source_content.get("formatted_body")
                 if not self._is_bot_mentioned(body, formatted_body):
+                    logger.debug(
+                        "Matrix: ignoring media event %s in %s — no @mention "
+                        "(set MATRIX_REQUIRE_MENTION=false to disable)",
+                        getattr(event, "event_id", "?"),
+                        room.room_id,
+                    )
                     return
 
         # Strip mention from body when present (including in DMs).
