@@ -65,11 +65,13 @@ If `git status --short` shows unexpected changes after `hermes update`, stop and
 hermes version
 ```
 
-Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases) or check for available updates:
+Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases) or run a read-only update check:
 
 ```bash
 hermes update --check
 ```
+
+`hermes update --check` fetches the latest git refs and reports whether the current checkout is up to date, behind, ahead, or diverged. It does not pull code, reinstall dependencies, migrate config, or restart the gateway.
 
 ### Updating from Messaging Platforms
 

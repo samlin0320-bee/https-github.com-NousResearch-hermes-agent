@@ -745,7 +745,7 @@ hermes completion zsh >> ~/.zshrc
 | Command | Description |
 |---------|-------------|
 | `hermes version` | Print version information. |
-| `hermes update` | Pull latest changes and reinstall dependencies. |
+| `hermes update [--check]` | Pull latest changes and reinstall dependencies, or run a read-only update check. |
 | `hermes uninstall [--full] [--yes]` | Remove Hermes, optionally deleting all config/data. |
 
 ## See also

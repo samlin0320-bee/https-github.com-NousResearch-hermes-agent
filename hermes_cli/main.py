@@ -3306,6 +3306,103 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
 
+def _current_branch_name(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Return the current branch name, or ``HEAD`` when detached."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _print_fetch_error(stderr: str) -> None:
+    """Print a user-friendly fetch failure message."""
+    stderr = (stderr or "").strip()
+    if "Could not resolve host" in stderr or "unable to access" in stderr:
+        print("✗ Network error — cannot reach the remote repository.")
+        if stderr:
+            print(f"  {stderr.splitlines()[0]}")
+    elif "Authentication failed" in stderr or "could not read Username" in stderr:
+        print("✗ Authentication failed — check your git credentials or SSH key.")
+    else:
+        print("✗ Failed to fetch updates from remote.")
+        if stderr:
+            print(f"  {stderr.splitlines()[0]}")
+
+
+def _cmd_update_check(git_cmd: list[str], cwd: Path) -> int:
+    """Read-only update status check for the current checkout."""
+    if not (cwd / ".git").exists():
+        print("✗ Not a git repository. `hermes update --check` only works in a git checkout.")
+        return 1
+
+    origin_url = _get_origin_url(git_cmd, cwd)
+    is_fork = _is_fork(origin_url)
+    current_branch = _current_branch_name(git_cmd, cwd) or "unknown"
+
+    target_remote = "origin"
+    target_ref = "origin/main"
+    target_label = "origin/main"
+
+    if is_fork:
+        if _has_upstream_remote(git_cmd, cwd):
+            target_remote = "upstream"
+            target_ref = "upstream/main"
+            target_label = "official upstream/main"
+        else:
+            target_label = "origin/main (fork origin, no upstream remote configured)"
+
+    print("→ Checking for updates...")
+    print(f"  Repo: {'fork' if is_fork else 'official checkout'}")
+    print(f"  Current branch: {current_branch}")
+    print(f"  Comparison target: {target_label}")
+
+    try:
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", target_remote, "--quiet"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        print(f"✗ Failed to fetch updates from {target_remote}.")
+        print(f"  {exc}")
+        return 1
+
+    if fetch_result.returncode != 0:
+        _print_fetch_error(fetch_result.stderr)
+        return 1
+
+    behind = _count_commits_between(git_cmd, cwd, "HEAD", target_ref)
+    ahead = _count_commits_between(git_cmd, cwd, target_ref, "HEAD")
+    if behind < 0 or ahead < 0:
+        print("✗ Could not compare the local checkout to the target branch.")
+        return 1
+
+    if behind == 0 and ahead == 0:
+        print(f"✓ Up to date with {target_ref}")
+    elif behind > 0 and ahead == 0:
+        print(f"↑ Update available: {behind} commit(s) behind {target_ref}")
+        print("  Run `hermes update` to apply the latest changes.")
+    elif behind == 0 and ahead > 0:
+        print(f"ℹ Local checkout is {ahead} commit(s) ahead of {target_ref}")
+    else:
+        print(f"⚠ Local checkout has diverged from {target_ref} (ahead {ahead}, behind {behind})")
+
+    if current_branch != "main":
+        label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
+        print(f"  ℹ Running `hermes update` will switch this checkout from {label} to main before updating.")
+
+    return 0
+
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
     reports a stale "commits behind" count after a successful update.
@@ -3420,6 +3517,7 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+    check_only = getattr(args, "check", False)
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
     
@@ -3451,6 +3549,12 @@ def cmd_update(args):
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    if check_only:
+        rc = _cmd_update_check(git_cmd, PROJECT_ROOT)
+        if rc != 0:
+            sys.exit(rc)
+        return
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
@@ -3489,15 +3593,10 @@ def cmd_update(args):
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
 
-        # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        current_branch = result.stdout.strip()
+        current_branch = _current_branch_name(git_cmd, PROJECT_ROOT)
+        if current_branch is None:
+            print("✗ Failed to determine the current git branch.")
+            sys.exit(1)
 
         # Always update against main
         branch = "main"
@@ -5462,6 +5561,10 @@ For more help on a command:
         "update",
         help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies"
+    )
+    update_parser.add_argument(
+        "--check", action="store_true", default=False,
+        help="Check for available updates without modifying the current checkout"
     )
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
