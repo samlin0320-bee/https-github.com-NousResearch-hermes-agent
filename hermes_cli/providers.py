@@ -87,6 +87,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "xiaomi-token-plan": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://token-plan-ams.xiaomimimo.com/v1",
+    ),
     "minimax": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="MINIMAX_BASE_URL",
@@ -171,6 +175,10 @@ ALIASES: Dict[str, str] = {
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+
+    # xiaomi-token-plan
+    "xiaomi": "xiaomi-token-plan",
+    "mimo": "xiaomi-token-plan",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -362,6 +370,7 @@ LABELS: Dict[str, str] = {
     "anthropic": "Anthropic",
     "zai": "Z.AI / GLM",
     "kimi-for-coding": "Kimi / Moonshot",
+    "xiaomi-token-plan": "Xiaomi MiMo Token Plan",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "deepseek": "DeepSeek",
@@ -378,6 +387,7 @@ LABELS: Dict[str, str] = {
     "kilocode": "Kilo Gateway",
     "copilot": "GitHub Copilot",
     "kimi-coding": "Kimi / Moonshot",
+    "xiaomi-token-plan": "Xiaomi MiMo Token Plan",
     "opencode-zen": "OpenCode Zen",
 }
 

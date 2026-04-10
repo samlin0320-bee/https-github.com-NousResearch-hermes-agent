@@ -149,6 +149,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "anthropic": "anthropic",
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",
+    "xiaomi-token-plan": "xiaomi",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",

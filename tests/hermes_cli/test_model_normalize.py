@@ -84,6 +84,20 @@ class TestCopilotDotPreservation:
         assert result == expected
 
 
+class TestXiaomiTokenPlanNormalization:
+    """Xiaomi token-plan is a direct OpenAI-compatible provider."""
+
+    @pytest.mark.parametrize("model,expected", [
+        ("mini-v2-pro", "mini-v2-pro"),
+        ("mini-v2-omni", "mini-v2-omni"),
+        ("mini-v2-flash", "mini-v2-flash"),
+        ("xiaomi/mini-v2-pro", "xiaomi/mini-v2-pro"),
+    ])
+    def test_pass_through(self, model, expected):
+        result = normalize_model_for_provider(model, "xiaomi-token-plan")
+        assert result == expected
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:

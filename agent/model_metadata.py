@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "zai", "kimi-coding", "xiaomi-token-plan", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "custom", "local",
@@ -136,10 +136,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
+    "minimaxai/minimax-m2.5": 1048576,
     "MiniMaxAI/MiniMax-M2.5": 1048576,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
+    "mimo-v2-flash": 1048576,
     "zai-org/GLM-5": 202752,
 }
 
@@ -186,6 +188,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
     "api.kimi.com": "kimi-coding",
+    "token-plan-ams.xiaomimimo.com": "xiaomi-token-plan",
+    "xiaomimimo.com": "xiaomi-token-plan",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",

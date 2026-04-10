@@ -81,6 +81,7 @@ _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
     "zai",
     "kimi-coding",
+    "xiaomi-token-plan",
     "minimax",
     "minimax-cn",
     "alibaba",

@@ -42,6 +42,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
+| Xiaomi MiMo Token Plan | `xiaomi-token-plan` | `XIAOMI_MIMO_TP_API_KEY` |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
@@ -250,6 +251,7 @@ These options apply to `auxiliary:`, `compression:`, and `fallback_model:` confi
 | `"codex"` | Force Codex OAuth | `hermes model` → Codex |
 | `"main"` | Use whatever provider the main agent uses (auxiliary tasks only) | Active main provider configured |
 | `"anthropic"` | Force Anthropic native | `ANTHROPIC_API_KEY` or Claude Code credentials |
+| `"xiaomi-token-plan"` | Force Xiaomi MiMo Token Plan | `XIAOMI_MIMO_TP_API_KEY` |
 
 ### Direct Endpoint Override
 

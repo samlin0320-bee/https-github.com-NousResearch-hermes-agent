@@ -41,6 +41,7 @@ class TestProviderRegistry:
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
+        ("xiaomi-token-plan", "Xiaomi MiMo Token Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
@@ -67,6 +68,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
         assert pconfig.api_key_env_vars == ("KIMI_API_KEY",)
         assert pconfig.base_url_env_var == "KIMI_BASE_URL"
+
+    def test_xiaomi_token_plan_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["xiaomi-token-plan"]
+        assert pconfig.api_key_env_vars == ("XIAOMI_MIMO_TP_API_KEY",)
+        assert pconfig.base_url_env_var == ""
 
     def test_minimax_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax"]
@@ -121,6 +127,7 @@ PROVIDER_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "XIAOMI_MIMO_TP_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -237,6 +244,10 @@ class TestResolveProvider:
     def test_auto_detects_kimi_key(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "test-kimi-key")
         assert resolve_provider("auto") == "kimi-coding"
+
+    def test_auto_detects_xiaomi_token_plan_key(self, monkeypatch):
+        monkeypatch.setenv("XIAOMI_MIMO_TP_API_KEY", "test-mimo-key")
+        assert resolve_provider("auto") == "xiaomi-token-plan"
 
     def test_auto_detects_minimax_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "test-mm-key")
@@ -419,6 +430,13 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "kimi-secret-key"
         assert creds["base_url"] == "https://api.moonshot.ai/v1"
 
+    def test_resolve_xiaomi_token_plan_with_key(self, monkeypatch):
+        monkeypatch.setenv("XIAOMI_MIMO_TP_API_KEY", "mimo-secret-key")
+        creds = resolve_api_key_provider_credentials("xiaomi-token-plan")
+        assert creds["provider"] == "xiaomi-token-plan"
+        assert creds["api_key"] == "mimo-secret-key"
+        assert creds["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
     def test_resolve_minimax_with_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-secret-key")
         creds = resolve_api_key_provider_credentials("minimax")
@@ -508,6 +526,16 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kimi-key"
+
+    def test_runtime_xiaomi_token_plan(self, monkeypatch):
+        monkeypatch.setenv("XIAOMI_MIMO_TP_API_KEY", "mimo-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="xiaomi-token-plan")
+        assert result["provider"] == "xiaomi-token-plan"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "mimo-key"
+        assert "token-plan-ams.xiaomimimo.com" in result["base_url"]
+
 
     def test_runtime_minimax(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")

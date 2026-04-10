@@ -23,6 +23,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
+| **Xiaomi MiMo Token Plan** | `XIAOMI_MIMO_TP_API_KEY` in `~/.hermes/.env` (provider: `xiaomi-token-plan`, fixed endpoint) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
@@ -79,6 +80,31 @@ model:
 :::tip Aliases
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
+
+### Xiaomi MiMo Token Plan
+
+Use Xiaomi MiMo Token Plan directly through its fixed OpenAI-compatible endpoint:
+
+```bash
+export XIAOMI_MIMO_TP_API_KEY=***
+hermes chat --provider xiaomi-token-plan --model mini-v2-pro
+```
+
+Supported models:
+
+- `mini-v2-pro`
+- `mini-v2-omni`
+- `mini-v2-flash`
+
+Or set it permanently:
+
+```yaml
+model:
+  provider: "xiaomi-token-plan"
+  default: "mini-v2-pro"
+```
+
+The base URL is fixed at `https://token-plan-ams.xiaomimimo.com/v1`; there is no override env var.
 
 ### GitHub Copilot
 
