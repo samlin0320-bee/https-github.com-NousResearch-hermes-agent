@@ -1290,6 +1290,8 @@ def _model_flow_nous(config, current_model="", args=None):
             model_cfg["base_url"] = inference_url.rstrip("/")
         else:
             model_cfg.pop("base_url", None)
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api_mode", None)
         config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
@@ -1708,6 +1710,11 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = base_url
         if api_key:
             model["api_key"] = api_key
+        api_mode = provider_info.get("api_mode")
+        if api_mode:
+            model["api_mode"] = api_mode
+        else:
+            model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -1781,6 +1788,11 @@ def _model_flow_named_custom(config, provider_info):
     model["base_url"] = base_url
     if api_key:
         model["api_key"] = api_key
+    api_mode = provider_info.get("api_mode")
+    if api_mode:
+        model["api_mode"] = api_mode
+    else:
+        model.pop("api_mode", None)
     save_config(cfg)
     deactivate_provider()
 
