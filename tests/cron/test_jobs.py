@@ -218,6 +218,10 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_string_repeat_once_is_treated_as_unset_for_one_shot(self, tmp_cron_dir):
+        job = create_job(prompt="One-shot", schedule="1h", repeat="once")
+        assert job["repeat"]["times"] == 1
+
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None

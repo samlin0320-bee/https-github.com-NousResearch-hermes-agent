@@ -19,6 +19,7 @@ from cron.jobs import (
     create_job,
     get_job,
     list_jobs,
+    normalize_repeat_value,
     parse_schedule,
     pause_job,
     remove_job,
@@ -349,8 +350,7 @@ def cronjob(
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                normalized_repeat = normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
