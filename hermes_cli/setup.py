@@ -2119,6 +2119,14 @@ def _setup_qqbot():
         from hermes_cli.gateway import _setup_standard_platform
         _setup_standard_platform(qq_platform)
 
+    
+def _setup_session():
+    """Configure Session messenger."""
+    print_header("Session")
+    if prompt_yes_no("Set up Session (decentralized messenger)?", False):
+        from hermes_cli.gateway import _setup_session
+        _setup_session()
+
 
 def _setup_webhooks():
     """Configure webhook integration."""
@@ -2184,6 +2192,7 @@ _GATEWAY_PLATFORMS = [
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("QQ Bot", "QQ_APP_ID", _setup_qqbot),
+    ("Session", "SESSION_BOT_ID", _setup_session),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 
@@ -2236,6 +2245,7 @@ def setup_gateway(config: dict):
         or get_env_value("WEIXIN_ACCOUNT_ID")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("QQ_APP_ID")
+        or get_env_value("SESSION_BOT_ID")
         or get_env_value("WEBHOOK_ENABLED")
     )
     if any_messaging:
@@ -2259,6 +2269,8 @@ def setup_gateway(config: dict):
             missing_home.append("BlueBubbles")
         if get_env_value("QQ_APP_ID") and not get_env_value("QQ_HOME_CHANNEL"):
             missing_home.append("QQBot")
+        if get_env_value("SESSION_BOT_ID") and not get_env_value("SESSION_HOME_CHANNEL"):
+            missing_home.append("Session")
 
         if missing_home:
             print()
@@ -3169,6 +3181,8 @@ def _run_quick_setup(config: dict, hermes_home):
                 plat = "Discord"
             elif "SLACK" in name:
                 plat = "Slack"
+            elif "SESSION" in name:
+                plat = "Session"
             else:
                 continue
             if plat not in platforms:
@@ -3180,6 +3194,7 @@ def _run_quick_setup(config: dict, hermes_home):
                 "Telegram": "📱 Telegram",
                 "Discord": "💬 Discord",
                 "Slack": "💼 Slack",
+                "Session": "🔒 Session",
             }.get(p, p)
             for p in platform_order
         ]
@@ -3192,7 +3207,7 @@ def _run_quick_setup(config: dict, hermes_home):
         for idx in selected_indices:
             plat = platform_order[idx]
             vars_list = platforms[plat]
-            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
+            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼", "Session": "🔒"}.get(plat, "")
             print()
             print(color(f"  ─── {emoji} {plat} ───", Colors.CYAN))
             print()

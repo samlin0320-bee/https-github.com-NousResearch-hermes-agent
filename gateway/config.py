@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    SESSION = "session"
 
 
 @dataclass
@@ -277,6 +278,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # Session uses extra dict for config (bot_id)
+            elif platform == Platform.SESSION and config.extra.get("bot_id"):
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -864,6 +868,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=signal_home,
             name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
         )
+
+    # Session Protocol
+    session_bot_id = os.getenv("SESSION_BOT_ID")
+    if session_bot_id:
+        if Platform.SESSION not in config.platforms:
+            config.platforms[Platform.SESSION] = PlatformConfig()
+        config.platforms[Platform.SESSION].enabled = True
+        config.platforms[Platform.SESSION].extra.update({
+            "bot_id": session_bot_id,
+            "bot_name": os.getenv("SESSION_BOT_NAME", "Hermes"),
+            "data_path": os.getenv("SESSION_DATA_PATH", str(get_hermes_home() / "session-data")),
+            "bridge_port": os.getenv("SESSION_BRIDGE_PORT", "8095"),
+            "log_level": os.getenv("SESSION_LOG_LEVEL", "warn"),
+            "startup_timeout": os.getenv("SESSION_STARTUP_TIMEOUT", "15"),
+        })
+        session_home = os.getenv("SESSION_HOME_CHANNEL")
+        if session_home:
+            config.platforms[Platform.SESSION].home_channel = HomeChannel(
+                platform=Platform.SESSION,
+                chat_id=session_home,
+                name=os.getenv("SESSION_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Mattermost
     mattermost_token = os.getenv("MATTERMOST_TOKEN")

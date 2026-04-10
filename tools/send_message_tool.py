@@ -207,6 +207,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "session": Platform.SESSION,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -373,6 +374,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.session import SessionAdapter
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -402,6 +404,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.SESSION: SessionAdapter.MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
@@ -516,6 +519,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.SESSION:
+            result = await _send_session(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -1224,6 +1229,20 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         }
     except Exception as e:
         return _error(f"Feishu send failed: {e}")
+
+
+async def _send_session(extra: dict, chat_id: str, message: str) -> dict:
+    """Send a Session message via the local bridge HTTP endpoint."""
+    import httpx
+    port = extra.get("bridge_port", "8095")
+    url = f"http://127.0.0.1:{port}/send"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json={"to": chat_id, "body": message})
+            resp.raise_for_status()
+            return {"success": True, "platform": "session", "chat_id": chat_id}
+    except Exception as e:
+        return {"error": f"Session send failed: {e}"}
 
 
 def _check_send_message():

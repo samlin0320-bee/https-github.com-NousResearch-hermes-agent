@@ -54,6 +54,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
+    "SESSION_MNEMONIC", "SESSION_BOT_ID", "SESSION_BOT_NAME", "SESSION_DATA_PATH", "SESSION_HOME_CHANNEL", "SESSION_ALLOWED_USERS",
 })
 import yaml
 
@@ -1508,6 +1509,42 @@ OPTIONAL_ENV_VARS = {
     "QQ_SANDBOX": {
         "description": "Enable QQ sandbox mode for development testing (true/false)",
         "prompt": "QQ Sandbox Mode",
+        "category": "messaging",
+    },
+    "SESSION_BOT_ID": {
+        "description": "Session bot public key (set automatically by hermes setup)",
+        "prompt": "Session bot ID",
+        "url": "https://getsession.org",
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "SESSION_MNEMONIC": {
+        "description": "Session bot mnemonic seed phrase (13 words)",
+        "prompt": "Session mnemonic (13 words)",
+        "url": "https://getsession.org",
+        "password": True,
+        "category": "messaging",
+    },
+    "SESSION_ALLOWED_USERS": {
+        "description": "Comma-separated Session account IDs allowed to use the bot",
+        "prompt": "Allowed Session IDs (comma-separated, leave empty for open access)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "SESSION_HOME_CHANNEL": {
+        "description": "Session account ID where Hermes delivers cron results and notifications",
+        "prompt": "Home Session ID (leave empty to set later with /set-home)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "SESSION_BOT_NAME": {
+        "description": "Display name shown in Session (default: Hermes)",
+        "prompt": "Bot display name (leave empty for default 'Hermes')",
+        "url": None,
+        "password": False,
         "category": "messaging",
     },
     "GATEWAY_ALLOW_ALL_USERS": {

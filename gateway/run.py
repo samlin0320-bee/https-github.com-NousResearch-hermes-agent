@@ -2567,6 +2567,13 @@ class GatewayRunner:
                 logger.warning("BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured")
                 return None
             return BlueBubblesAdapter(config)
+        
+        elif platform == Platform.SESSION:
+            from gateway.platforms.session import SessionAdapter, check_session_requirements
+            if not check_session_requirements():
+                logger.warning("Session: SESSION_BOT_ID not set or Node.js not available")
+                return None
+            return SessionAdapter(config)
 
         elif platform == Platform.QQBOT:
             from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
@@ -2617,6 +2624,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.SESSION: "SESSION_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -2635,6 +2643,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.SESSION: "SESSION_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -9819,7 +9828,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_thread.start()
     
     # Wait for shutdown
-    await runner.wait_for_shutdown()
+    try:
+        await runner.wait_for_shutdown()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # Windows: loop.add_signal_handler is not supported, so Ctrl+C cancels
+        # the task directly without invoking signal_handler(). Call stop() here
+        # so adapters disconnect and background processes are cleaned up.
+        await runner.stop()
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:
