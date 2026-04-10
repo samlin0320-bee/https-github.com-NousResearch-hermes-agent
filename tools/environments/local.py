@@ -9,6 +9,8 @@ import subprocess
 import threading
 import time
 
+from hermes_constants import get_hermes_home
+
 _IS_WINDOWS = platform.system() == "Windows"
 
 from tools.environments.base import BaseEnvironment
@@ -284,9 +286,24 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+
+    hermes_home = get_hermes_home()
+    hermes_bin = str(hermes_home / "bin")
     existing_path = run_env.get("PATH", "")
-    if "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_parts = [part for part in existing_path.split(":") if part]
+    if hermes_bin not in path_parts:
+        run_env["PATH"] = ":".join([hermes_bin, *path_parts]) if path_parts else hermes_bin
+    elif existing_path:
+        run_env["PATH"] = existing_path
+
+    current_path = run_env.get("PATH", "")
+    if "/usr/bin" not in current_path.split(":"):
+        run_env["PATH"] = f"{current_path}:{_SANE_PATH}" if current_path else _SANE_PATH
+
+    isolated_gh_dir = str(hermes_home / "gh" / "aregalado1")
+    if "GH_CONFIG_DIR" not in run_env and os.path.isdir(isolated_gh_dir):
+        run_env["GH_CONFIG_DIR"] = isolated_gh_dir
+
     return run_env
 
 

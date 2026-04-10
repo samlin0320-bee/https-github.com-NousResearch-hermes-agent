@@ -197,3 +197,37 @@ class TestTerminalIntegration:
         register_env_passthrough([blocked_var])
         result_after = _make_run_env({})
         assert blocked_var in result_after
+
+    def test_make_run_env_prepends_hermes_bin(self, monkeypatch, tmp_path):
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        result = _make_run_env({})
+        assert result["PATH"].startswith(f"{tmp_path}/bin:")
+        assert "/usr/bin:/bin" in result["PATH"]
+
+    def test_make_run_env_defaults_to_isolated_gh_config(self, monkeypatch, tmp_path):
+        from tools.environments.local import _make_run_env
+
+        isolated_dir = tmp_path / "gh" / "aregalado1"
+        isolated_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+
+        result = _make_run_env({})
+        assert result["GH_CONFIG_DIR"] == str(isolated_dir)
+
+    def test_make_run_env_preserves_explicit_gh_config_dir(self, monkeypatch, tmp_path):
+        from tools.environments.local import _make_run_env
+
+        isolated_dir = tmp_path / "gh" / "aregalado1"
+        isolated_dir.mkdir(parents=True)
+        custom_dir = tmp_path / "custom-gh"
+        custom_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GH_CONFIG_DIR", str(custom_dir))
+
+        result = _make_run_env({})
+        assert result["GH_CONFIG_DIR"] == str(custom_dir)
