@@ -588,7 +588,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "google_genai"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -751,6 +751,15 @@ class AIAgent:
         # access for Codex Responses API streaming.
         self._anthropic_client = None
         self._is_anthropic_oauth = False
+        self._google_client = None
+
+        if self.api_mode == "google_genai":
+            from agent.google_adapter import build_google_client
+            self._google_client = build_google_client(api_key=api_key)
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Google Native)")
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -4321,6 +4330,10 @@ class AIAgent:
                         client=request_client_holder["client"],
                         on_first_delta=getattr(self, "_codex_on_first_delta", None),
                     )
+                elif self.api_mode == "google_genai":
+                    response = self._google_client.models.generate_content(**api_kwargs)
+                    from agent.google_adapter import normalize_google_response
+                    result["response"], _ = normalize_google_response(response, self.model)
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 else:
@@ -4735,6 +4748,16 @@ class AIAgent:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()
                             result["response"] = _call_anthropic()
+                        elif self.api_mode == "google_genai":
+                            # Streaming with google-genai is complex to mock back to OpenRouter shape,
+                            # so we fallback to non-streaming native call which already normalizes correctly.
+                            res = self._google_client.models.generate_content(**api_kwargs)
+                            from agent.google_adapter import normalize_google_response
+                            result["response"], _ = normalize_google_response(res, self.model)
+                            # Fire a single delta so the UI knows it finished
+                            if res.text:
+                                _fire_first_delta()
+                                self._fire_stream_delta(res.text)
                         else:
                             result["response"] = _call_chat_completions()
                         return  # success
@@ -5041,6 +5064,12 @@ class AIAgent:
                 self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
                 self._is_anthropic_oauth = _is_oauth_token(effective_key)
+                self.client = None
+                self._client_kwargs = {}
+            elif fb_api_mode == "google_genai":
+                from agent.google_adapter import build_google_client
+                self.api_key = fb_client.api_key
+                self._google_client = build_google_client(api_key=self.api_key)
                 self.client = None
                 self._client_kwargs = {}
             else:
@@ -5474,6 +5503,15 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        if self.api_mode == "google_genai":
+            from agent.google_adapter import build_google_kwargs
+            return build_google_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                max_tokens=self.max_tokens,
+            )
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -5637,8 +5675,13 @@ class AIAgent:
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
 
+        # Gemini AI Studio endpoint rejects models with the "google/" prefix
+        _req_model = self.model
+        if "generativelanguage.googleapis.com" in self._base_url_lower:
+            _req_model = _req_model.replace("google/", "")
+
         api_kwargs = {
-            "model": self.model,
+            "model": _req_model,
             "messages": sanitized_messages,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
@@ -8817,6 +8860,9 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     assistant_message, finish_reason = self._normalize_codex_response(response)
+                elif self.api_mode == "google_genai":
+                    assistant_message = response.choices[0].message
+                    finish_reason = response.choices[0].finish_reason
                 elif self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import normalize_anthropic_response
                     assistant_message, finish_reason = normalize_anthropic_response(

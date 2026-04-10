@@ -57,6 +57,16 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    "google": [
+        "gemini-3.1-pro-preview",
+        "gemini-3.0-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-exp",
+    ],
+
     "nous": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
