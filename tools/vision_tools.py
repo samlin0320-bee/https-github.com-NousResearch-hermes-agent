@@ -33,11 +33,16 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import (
+    async_call_llm,
+    extract_content_or_reasoning,
+    resolve_vision_provider_client,
+)
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 
@@ -66,6 +71,73 @@ def _resolve_download_timeout() -> float:
     return 30.0
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
+
+
+@asynccontextmanager
+async def _maybe_stream_response(response):
+    """Uniformly handle SDK stream context managers and bare responses.
+
+    Some custom OpenAI-compatible providers expose usable text only via
+    `/responses?stream=true` SSE deltas. The OpenAI SDK may return either a
+    stream manager or a pre-resolved response object depending on transport.
+    """
+    if hasattr(response, "__aenter__") and hasattr(response, "__aexit__"):
+        async with response as stream:
+            yield stream
+    else:
+        yield response
+
+
+async def _extract_streamed_responses_text(stream) -> str:
+    """Concatenate assistant text from `/responses` SSE delta events."""
+    deltas: list[str] = []
+
+    async for event in stream:
+        event_type = getattr(event, "type", None)
+        if event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", None)
+            if isinstance(delta, str) and delta:
+                deltas.append(delta)
+
+    return "".join(deltas).strip()
+
+
+async def _responses_stream_fallback(
+    *,
+    user_prompt: str,
+    image_data_url: str,
+    model: Optional[str] = None,
+    timeout: float = 120.0,
+) -> str:
+    """Fallback to OpenAI `/responses` streaming when chat completions are empty.
+
+    This targets OpenAI-compatible providers that accept multimodal input but
+    only expose the assistant text through `response.output_text.delta` SSE
+    events rather than `chat.completions` content or final `/responses` output.
+    """
+    _provider, client, final_model = resolve_vision_provider_client(async_mode=True)
+    if client is None:
+        return ""
+
+    request_model = model or final_model
+    if not request_model:
+        return ""
+
+    stream_ctx = client.responses.stream(
+        model=request_model,
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": user_prompt},
+                {"type": "input_image", "image_url": image_data_url},
+            ],
+        }],
+        max_output_tokens=2000,
+        timeout=timeout,
+    )
+
+    async with _maybe_stream_response(stream_ctx) as stream:
+        return await _extract_streamed_responses_text(stream)
 
 
 def _validate_image_url(url: str) -> bool:
@@ -412,14 +484,28 @@ async def vision_analyze_tool(
             call_kwargs["model"] = model
         response = await async_call_llm(**call_kwargs)
         
-        # Extract the analysis — fall back to reasoning if content is empty
+        # Extract the analysis — fall back to reasoning if content is empty.
+        # Some OpenAI-compatible providers only emit usable vision output in
+        # streamed `/responses` deltas, so try chat-completions once more first,
+        # then fall back to `/responses` streaming before giving up.
         analysis = extract_content_or_reasoning(response)
 
-        # Retry once on empty content (reasoning-only response)
         if not analysis:
-            logger.warning("Vision LLM returned empty content, retrying once")
+            logger.warning("Vision LLM returned empty content, retrying chat completion once")
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
+
+        if not analysis:
+            logger.warning("Vision LLM still empty after retry; attempting /responses stream fallback")
+            try:
+                analysis = await _responses_stream_fallback(
+                    user_prompt=comprehensive_prompt,
+                    image_data_url=image_data_url,
+                    model=model,
+                    timeout=vision_timeout,
+                )
+            except Exception:
+                logger.warning("Vision /responses stream fallback failed", exc_info=True)
 
         analysis_length = len(analysis)
         
