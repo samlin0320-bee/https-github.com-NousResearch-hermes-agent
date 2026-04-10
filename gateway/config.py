@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    NEXTCLOUD_TALK = "nextcloud_talk"
 
 
 @dataclass
@@ -1210,6 +1211,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
+    # Nextcloud Talk: configured via YAML (gateway.nextcloud_talk section
+    # or platforms.nextcloud_talk.extra). Only the bot secret lives in .env
+    # as NEXTCLOUD_TALK_BOT_SECRET, read at adapter init time via the
+    # bot_secret_env config field.
 
     # QQ (Official Bot API v2)
     qq_app_id = os.getenv("QQ_APP_ID")

@@ -2123,6 +2123,37 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
+
+def _setup_nextcloud_talk():
+    """Guide the user through setting up the Nextcloud Talk bot."""
+    print_header("Nextcloud Talk")
+    existing = get_env_value("NEXTCLOUD_TALK_BOT_SECRET")
+    if existing:
+        print_info("Nextcloud Talk: already configured")
+        if not prompt_yes_no("Reconfigure Nextcloud Talk?", False):
+            return
+
+    print_info("Talk bots are registered on the Nextcloud server, not here.")
+    print_info("Steps:")
+    print_info("  1. On your Nextcloud server, run:")
+    print_info("     sudo -u www-data php occ talk:bot:install Hermes \\")
+    print_info("         <32-char-secret> http://<lxc-ip>:8765/talk/webhook \\")
+    print_info("         Hermes AI Agent --feature=webhook --feature=response")
+    print_info("  2. The command outputs a bot ID. Attach the bot to each")
+    print_info("     conversation with:")
+    print_info("     sudo -u www-data php occ talk:bot:setup <bot-id> <conv-token>")
+    print_info("  3. A helper script is available at:")
+    print_info("     scripts/register_talk_bot.sh")
+    print()
+    url = prompt("Nextcloud base URL (e.g. https://nextcloud.example.com)")
+    if url:
+        save_env_value("NEXTCLOUD_TALK_URL", url)
+    secret = prompt("Bot shared secret (from talk:bot:install)", password=True)
+    if secret:
+        save_env_value("NEXTCLOUD_TALK_BOT_SECRET", secret)
+    print_success("Nextcloud Talk configured. Restart the gateway to apply.")
+
+
 # Platform registry for the gateway checklist
 _GATEWAY_PLATFORMS = [
     ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
@@ -2133,6 +2164,7 @@ _GATEWAY_PLATFORMS = [
     ("SMS (Twilio)", "TWILIO_ACCOUNT_SID", _setup_sms),
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
+    ("Nextcloud Talk", "NEXTCLOUD_TALK_BOT_SECRET", _setup_nextcloud_talk),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
     ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
     ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
