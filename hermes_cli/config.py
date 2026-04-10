@@ -444,6 +444,8 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        "markdown": True,          # Render markdown formatting in LLM responses
+        "code_theme": "",          # Pygments theme for code blocks (empty = auto from skin)
     },
 
     # Privacy settings
