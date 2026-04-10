@@ -38,6 +38,15 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    # Tests must not inherit real AWS credentials — they would trigger Bedrock
+    # auto-detection and break provider resolution tests.
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     # Avoid making real calls during tests if this key is set in the env files
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 

@@ -88,7 +88,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", "api_key", or "aws_credentials"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -98,6 +98,10 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # True for providers that use platform-specific auth (AWS SigV4, GCP
+    # ADC, etc.) instead of API keys.  These skip api_key/base_url
+    # validation and pass model IDs through untransformed.
+    uses_platform_auth: bool = False
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -243,7 +247,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        auth_type="aws_credentials",
+        inference_base_url="",
+        api_key_env_vars=(),
+        base_url_env_var="",
+        uses_platform_auth=True,
+    ),
 }
+
+
+def is_platform_auth_provider(provider_id: str) -> bool:
+    """Check if a provider uses platform-specific auth instead of API keys."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    return pconfig.uses_platform_auth if pconfig else False
 
 
 # =============================================================================
@@ -831,6 +850,7 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
@@ -884,6 +904,11 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    # Auto-detect AWS Bedrock credentials
+    if (has_usable_secret(os.getenv("AWS_ACCESS_KEY_ID", ""))
+            and has_usable_secret(os.getenv("AWS_SECRET_ACCESS_KEY", ""))):
+        return "bedrock"
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -2246,6 +2271,46 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def resolve_bedrock_credentials() -> Dict[str, Any]:
+    """Resolve AWS credentials for Bedrock provider."""
+    access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+    session_token = os.getenv("AWS_SESSION_TOKEN", "").strip()
+    region = (
+        os.getenv("AWS_REGION", "").strip()
+        or os.getenv("AWS_DEFAULT_REGION", "").strip()
+        or "us-east-1"
+    )
+    return {
+        "provider": "bedrock",
+        "aws_access_key": access_key,
+        "aws_secret_key": secret_key,
+        "aws_session_token": session_token,
+        "aws_region": region,
+        "source": "env" if (access_key and secret_key) else "aws_default_chain",
+    }
+
+
+def get_bedrock_auth_status() -> Dict[str, Any]:
+    """Status snapshot for AWS Bedrock provider."""
+    access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+    region = (
+        os.getenv("AWS_REGION", "").strip()
+        or os.getenv("AWS_DEFAULT_REGION", "").strip()
+        or "us-east-1"
+    )
+    configured = bool(access_key and secret_key)
+    return {
+        "configured": configured,
+        "logged_in": configured,
+        "provider": "bedrock",
+        "name": "AWS Bedrock",
+        "key_source": "AWS_ACCESS_KEY_ID" if configured else "",
+        "aws_region": region,
+    }
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
@@ -2253,6 +2318,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "bedrock":
+        return get_bedrock_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
     if target == "copilot-acp":

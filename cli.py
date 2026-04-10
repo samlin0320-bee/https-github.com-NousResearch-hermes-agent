@@ -2502,7 +2502,8 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
-        if not isinstance(api_key, str) or not api_key:
+        _is_platform_auth = runtime.get("uses_platform_auth", False)
+        if (not isinstance(api_key, str) or not api_key) and not _is_platform_auth:
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
             # no API key was found, use a placeholder so the OpenAI SDK
@@ -2520,12 +2521,16 @@ class HermesCLI:
                 print("\n⚠️  Provider resolver returned an empty API key. "
                       "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if (not isinstance(base_url, str) or not base_url) and not _is_platform_auth:
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
             return False
 
-        credentials_changed = api_key != self.api_key or base_url != self.base_url
+        credentials_changed = (
+            api_key != self.api_key
+            or base_url != self.base_url
+            or runtime.get("platform_credentials", {}) != getattr(self, "_platform_credentials", {})
+        )
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
@@ -2540,6 +2545,7 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self._platform_credentials = runtime.get("platform_credentials", {})
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.
@@ -2568,6 +2574,8 @@ class HermesCLI:
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
+                "platform_credentials": getattr(self, "_platform_credentials", {}),
+                "credential_pool": getattr(self, "_credential_pool", None),
                 "credential_pool": getattr(self, "_credential_pool", None),
             },
         )
@@ -2641,6 +2649,7 @@ class HermesCLI:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "platform_credentials": getattr(self, "_platform_credentials", {}),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -2652,6 +2661,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                platform_credentials=runtime.get("platform_credentials", {}),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,

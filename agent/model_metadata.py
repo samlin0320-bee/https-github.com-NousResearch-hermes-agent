@@ -141,6 +141,21 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
     "zai-org/GLM-5": 202752,
+    # AWS Bedrock models
+    "bedrock/anthropic.claude-3-sonnet": 200000,
+    "bedrock/anthropic.claude-sonnet-4": 200000,
+    "bedrock/anthropic.claude-opus-4": 200000,
+    "bedrock/anthropic.claude-opus-4-5": 200000,
+    "bedrock/anthropic.claude-haiku-4-5": 200000,
+    "bedrock/anthropic.claude-sonnet-4-5": 200000,
+    "bedrock/amazon.nova-pro": 300000,
+    "bedrock/amazon.nova-lite": 300000,
+    "bedrock/amazon.nova-micro": 128000,
+    "bedrock/amazon.nova-2-lite": 1000000,
+    "bedrock/deepseek.v3": 164000,
+    "bedrock/meta.llama3-1": 128000,
+    "bedrock/mistral.mistral-large-3": 256000,
+    "bedrock/mistral.mistral-large": 32000,
 }
 
 _CONTEXT_LENGTH_KEYS = (
@@ -849,6 +864,19 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     return None
 
 
+def _query_bedrock_context_length(model: str) -> Optional[int]:
+    """Query the static Bedrock model metadata table for context length.
+
+    Delegates to ``get_bedrock_context_length()`` in ``bedrock_adapter.py``.
+    Returns ``None`` if the model is not found in the Bedrock metadata table.
+    """
+    try:
+        from agent.bedrock_adapter import get_bedrock_context_length
+        return get_bedrock_context_length(model)
+    except (KeyError, ImportError):
+        return None
+
+
 def _resolve_nous_context_length(model: str) -> Optional[int]:
     """Resolve Nous Portal model context length via OpenRouter metadata.
 
@@ -906,6 +934,12 @@ def get_model_context_length(
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
+
+    # 0.5. Bedrock models — check static metadata table first
+    if model.startswith("bedrock/"):
+        bedrock_ctx = _query_bedrock_context_length(model)
+        if bedrock_ctx is not None:
+            return bedrock_ctx
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that

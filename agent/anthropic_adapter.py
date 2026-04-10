@@ -279,6 +279,42 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def build_anthropic_bedrock_client(
+    aws_access_key: str = "",
+    aws_secret_key: str = "",
+    aws_session_token: str = "",
+    aws_region: str = "us-east-1",
+):
+    """Create an AnthropicBedrock client for AWS Bedrock inference."""
+    try:
+        from anthropic import AnthropicBedrock
+    except ImportError:
+        raise ImportError(
+            "The 'anthropic[bedrock]' extra is required for AWS Bedrock support. "
+            "Install it with: pip install 'anthropic[bedrock]'"
+        )
+    from httpx import Timeout
+    kwargs: dict = {
+        "aws_region": aws_region or "us-east-1",
+        "timeout": Timeout(timeout=900.0, connect=10.0),
+    }
+    if aws_access_key and aws_secret_key:
+        kwargs["aws_access_key"] = aws_access_key
+        kwargs["aws_secret_key"] = aws_secret_key
+    if aws_session_token:
+        kwargs["aws_session_token"] = aws_session_token
+    # Do not forward _COMMON_BETAS to Bedrock — Bedrock proxies Anthropic's
+    # API on its own release cadence and may reject unknown beta headers.
+    try:
+        return AnthropicBedrock(**kwargs)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to initialize AWS Bedrock client: {exc}\n"
+            "Check that boto3 is installed ('pip install anthropic[bedrock]') "
+            "and that your AWS credentials and region are valid."
+        ) from exc
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
@@ -770,14 +806,21 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
+def normalize_model_name(model: str, preserve_dots: bool = False, preserve_model_id: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
+    When preserve_model_id is True, returns the model name unchanged.
+    Platform-auth providers (Bedrock, Vertex, etc.) use opaque model IDs
+    that must not be transformed.
+
+    Otherwise:
     - Strips 'anthropic/' prefix (OpenRouter format, case-insensitive)
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
     """
+    if preserve_model_id:
+        return model
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
@@ -1251,6 +1294,7 @@ def build_anthropic_kwargs(
     tool_choice: Optional[str] = None,
     is_oauth: bool = False,
     preserve_dots: bool = False,
+    preserve_model_id: bool = False,
     context_length: Optional[int] = None,
     base_url: str | None = None,
 ) -> Dict[str, Any]:
@@ -1284,13 +1328,17 @@ def build_anthropic_kwargs(
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
 
+    When *preserve_model_id* is True, the model name is passed through
+    unchanged. Platform-auth providers (Bedrock, Vertex, etc.) use opaque
+    model IDs that must not be transformed.
+
     When *base_url* points to a third-party Anthropic-compatible endpoint,
     thinking block signatures are stripped (they are Anthropic-proprietary).
     """
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
-    model = normalize_model_name(model, preserve_dots=preserve_dots)
+    model = normalize_model_name(model, preserve_dots=preserve_dots, preserve_model_id=preserve_model_id)
     # effective_max_tokens = output cap for this call (≠ total context window)
     effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
 

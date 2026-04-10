@@ -832,6 +832,37 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
 
+    "AWS_ACCESS_KEY_ID": {
+        "description": "AWS Access Key ID for Bedrock",
+        "prompt": "AWS Access Key ID",
+        "url": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html",
+        "password": False,
+        "category": "provider",
+    },
+    "AWS_SECRET_ACCESS_KEY": {
+        "description": "AWS Secret Access Key for Bedrock",
+        "prompt": "AWS Secret Access Key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+    },
+    "AWS_SESSION_TOKEN": {
+        "description": "AWS Session Token for temporary credentials (optional)",
+        "prompt": "AWS Session Token (optional)",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AWS_REGION": {
+        "description": "AWS region for Bedrock (default: us-east-1)",
+        "prompt": "AWS Region",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+
     # ── Tool API keys ──
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",

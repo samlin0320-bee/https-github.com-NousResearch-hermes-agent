@@ -73,6 +73,7 @@ from tools.browser_tool import cleanup_browser
 
 
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.auth import is_platform_auth_provider
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
@@ -510,6 +511,7 @@ class AIAgent:
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
+        platform_credentials: dict = None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
@@ -586,8 +588,11 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        self._platform_credentials = platform_credentials or {}
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
+        elif self.provider == "bedrock":
+            self.api_mode = "bedrock_converse"
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
         elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
@@ -603,6 +608,7 @@ class AIAgent:
             self.api_mode = "anthropic_messages"
         else:
             self.api_mode = "chat_completions"
+        self._uses_platform_auth = is_platform_auth_provider(self.provider)
 
         # Direct OpenAI sessions use the Responses API path.  GPT-5.x tool
         # calls with reasoning are rejected on /v1/chat/completions, and
@@ -670,7 +676,8 @@ class AIAgent:
         is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        is_bedrock = self.api_mode == "bedrock_converse"
+        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic or is_bedrock
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget pressure: warn the LLM as it approaches max_iterations.
@@ -749,7 +756,29 @@ class AIAgent:
         self._anthropic_client = None
         self._is_anthropic_oauth = False
 
-        if self.api_mode == "anthropic_messages":
+        # Bedrock credential resolver — initialized when api_mode is bedrock_converse
+        self._bedrock_credentials = None
+        self._bedrock_region = None
+        self._bedrock_tools_stripped = False  # Set True if model doesn't support tool calling
+
+        if self.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import BedrockCredentialResolver
+            _pc = self._platform_credentials
+            self._bedrock_credentials = BedrockCredentialResolver(
+                aws_access_key_id=_pc.get("aws_access_key") or os.environ.get("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=_pc.get("aws_secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                aws_session_token=_pc.get("aws_session_token") or os.environ.get("AWS_SESSION_TOKEN"),
+                aws_profile=os.environ.get("AWS_PROFILE"),
+                aws_region=_pc.get("aws_region") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+            )
+            self._bedrock_region = self._bedrock_credentials.region
+            # No OpenAI or Anthropic client needed for Bedrock mode
+            self.client = None
+            self._client_kwargs = {}
+            self.api_key = ""
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region})")
+        elif self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -931,7 +960,7 @@ class AIAgent:
         
         # Show prompt caching status
         if self._use_prompt_caching and not self.quiet_mode:
-            source = "native Anthropic" if is_native_anthropic else "Claude via OpenRouter"
+            source = "native Anthropic" if is_native_anthropic else "AWS Bedrock" if is_bedrock else "Claude via OpenRouter"
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
@@ -1334,6 +1363,7 @@ class AIAgent:
         # ── Swap core runtime fields ──
         self.model = new_model
         self.provider = new_provider
+        self._uses_platform_auth = is_platform_auth_provider(self.provider)
         self.base_url = base_url or self.base_url
         self.api_mode = api_mode
         if api_key:
@@ -4288,6 +4318,15 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "bedrock_converse":
+                    from agent.bedrock_adapter import bedrock_converse_create, normalize_bedrock_response
+                    raw = bedrock_converse_create(
+                        api_kwargs, self._bedrock_credentials, self._bedrock_region,
+                        endpoint_url=os.environ.get("AWS_BEDROCK_RUNTIME_ENDPOINT"),
+                    )
+                    if raw.get("_tools_stripped"):
+                        self._bedrock_tools_stripped = True
+                    result["response"] = normalize_bedrock_response(raw)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -4676,6 +4715,46 @@ class AIAgent:
                 # Return the native Anthropic Message for downstream processing
                 return stream.get_final_message()
 
+        def _call_bedrock():
+            """Stream a Bedrock ConverseStream response.
+
+            Fires delta callbacks for real-time token delivery. Returns
+            the normalized (assistant_message, finish_reason) tuple matching
+            the non-streaming shape so the agent loop processes it identically.
+            """
+            from agent.bedrock_adapter import bedrock_converse_stream, normalize_bedrock_response
+            self._reasoning_deltas_fired = False
+            last_chunk_time["t"] = time.time()
+
+            def _bedrock_stream_delta(text):
+                last_chunk_time["t"] = time.time()
+                _fire_first_delta()
+                self._fire_stream_delta(text)
+                deltas_were_sent["yes"] = True
+
+            def _bedrock_reasoning_delta(text):
+                last_chunk_time["t"] = time.time()
+                _fire_first_delta()
+                self._fire_reasoning_delta(text)
+
+            def _bedrock_tool_gen(tool_name):
+                last_chunk_time["t"] = time.time()
+                _fire_first_delta()
+                self._fire_tool_gen_started(tool_name)
+
+            raw = bedrock_converse_stream(
+                api_kwargs,
+                self._bedrock_credentials,
+                self._bedrock_region,
+                endpoint_url=os.environ.get("AWS_BEDROCK_RUNTIME_ENDPOINT"),
+                stream_delta_callback=_bedrock_stream_delta,
+                reasoning_callback=_bedrock_reasoning_delta,
+                tool_gen_callback=_bedrock_tool_gen,
+            )
+            if raw.get("_tools_stripped"):
+                self._bedrock_tools_stripped = True
+            return normalize_bedrock_response(raw)
+
         def _call():
             import httpx as _httpx
 
@@ -4687,6 +4766,8 @@ class AIAgent:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()
                             result["response"] = _call_anthropic()
+                        elif self.api_mode == "bedrock_converse":
+                            result["response"] = _call_bedrock()
                         else:
                             result["response"] = _call_chat_completions()
                         return  # success
@@ -4980,6 +5061,7 @@ class AIAgent:
             old_model = self.model
             self.model = fb_model
             self.provider = fb_provider
+            self._uses_platform_auth = is_platform_auth_provider(self.provider)
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
             self._fallback_activated = True
@@ -5076,6 +5158,7 @@ class AIAgent:
             # ── Core runtime state ──
             self.model = rt["model"]
             self.provider = rt["provider"]
+            self._uses_platform_auth = is_platform_auth_provider(self.provider)
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
             self.api_key = rt["api_key"]
@@ -5173,6 +5256,7 @@ class AIAgent:
             self._client_kwargs = dict(rt["client_kwargs"])
             self.model = rt["model"]
             self.provider = rt["provider"]
+            self._uses_platform_auth = is_platform_auth_provider(self.provider)
             self.base_url = rt["base_url"]
             self.api_mode = rt["api_mode"]
             self.api_key = rt["api_key"]
@@ -5425,6 +5509,19 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        if self.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import build_bedrock_kwargs
+            ctx_len = getattr(self, "context_compressor", None)
+            ctx_len = ctx_len.context_length if ctx_len else None
+            return build_bedrock_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                max_tokens=self.max_tokens,
+                reasoning_config=self.reasoning_config,
+                context_length=ctx_len,
+            )
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -5447,6 +5544,7 @@ class AIAgent:
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
+                preserve_model_id=self._uses_platform_auth,
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
             )
@@ -6000,6 +6098,7 @@ class AIAgent:
                     tools=[memory_tool_def], max_tokens=5120,
                     reasoning_config=None,
                     preserve_dots=self._anthropic_preserve_dots(),
+                    preserve_model_id=self._uses_platform_auth,
                 )
                 response = self._anthropic_messages_create(ant_kwargs)
             elif not _aux_available:
@@ -6969,7 +7068,8 @@ class AIAgent:
                     _ant_kw = _bak(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                    is_oauth=self._is_anthropic_oauth,
-                                   preserve_dots=self._anthropic_preserve_dots())
+                                   preserve_dots=self._anthropic_preserve_dots(),
+                                   preserve_model_id=self._uses_platform_auth)
                     summary_response = self._anthropic_messages_create(_ant_kw)
                     _msg, _ = _nar(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_msg.content or "").strip()
@@ -7001,7 +7101,8 @@ class AIAgent:
                     _ant_kw2 = _bak2(model=self.model, messages=api_messages, tools=None,
                                     is_oauth=self._is_anthropic_oauth,
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
-                                    preserve_dots=self._anthropic_preserve_dots())
+                                    preserve_dots=self._anthropic_preserve_dots(),
+                                    preserve_model_id=self._uses_platform_auth)
                     retry_response = self._anthropic_messages_create(_ant_kw2)
                     _retry_msg, _ = _nar2(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_retry_msg.content or "").strip()
@@ -7671,6 +7772,17 @@ class AIAgent:
                         elif not content_blocks:
                             response_invalid = True
                             error_details.append("response.content is empty")
+                    elif self.api_mode == "bedrock_converse":
+                        # Bedrock response is a (assistant_message, finish_reason) tuple
+                        if response is None:
+                            response_invalid = True
+                            error_details.append("response is None")
+                        elif not isinstance(response, tuple) or len(response) != 2:
+                            response_invalid = True
+                            error_details.append("response is not a (message, finish_reason) tuple")
+                        elif response[0] is None:
+                            response_invalid = True
+                            error_details.append("response assistant_message is None")
                     else:
                         if response is None or not hasattr(response, 'choices') or response.choices is None or not response.choices:
                             response_invalid = True
@@ -7787,6 +7899,9 @@ class AIAgent:
                     elif self.api_mode == "anthropic_messages":
                         stop_reason_map = {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length", "stop_sequence": "stop"}
                         finish_reason = stop_reason_map.get(response.stop_reason, "stop")
+                    elif self.api_mode == "bedrock_converse":
+                        # Bedrock responses are already normalized to (assistant_message, finish_reason)
+                        _, finish_reason = response
                     else:
                         finish_reason = response.choices[0].finish_reason
 
@@ -7811,6 +7926,10 @@ class AIAgent:
                                 if getattr(_blk, "type", None) == "text":
                                     _text_parts.append(getattr(_blk, "text", ""))
                             _trunc_content = "\n".join(_text_parts) if _text_parts else None
+                        elif self.api_mode == "bedrock_converse":
+                            # Bedrock response is a tuple (assistant_message, finish_reason)
+                            # assistant_message is a SimpleNamespace with .content as string
+                            _trunc_content = getattr(response[0], "content", None) if response else None
 
                         _thinking_exhausted = (
                             not _trunc_has_tool_calls and (
@@ -7951,9 +8070,15 @@ class AIAgent:
                             }
                     
                     # Track actual token usage from response for context management
-                    if hasattr(response, 'usage') and response.usage:
+                    _usage_obj = None
+                    if self.api_mode == "bedrock_converse" and isinstance(response, tuple):
+                        _br_msg = response[0]
+                        _usage_obj = getattr(_br_msg, 'usage', None)
+                    elif hasattr(response, 'usage'):
+                        _usage_obj = response.usage
+                    if _usage_obj:
                         canonical_usage = normalize_usage(
-                            response.usage,
+                            _usage_obj,
                             provider=self.provider,
                             api_mode=self.api_mode,
                         )
@@ -8049,6 +8174,12 @@ class AIAgent:
                                 # Anthropic uses cache_read_input_tokens / cache_creation_input_tokens
                                 cached = getattr(response.usage, 'cache_read_input_tokens', 0) or 0
                                 written = getattr(response.usage, 'cache_creation_input_tokens', 0) or 0
+                            elif self.api_mode == "bedrock_converse":
+                                # Bedrock uses cache_read_input_tokens / cache_creation_input_tokens (from normalize)
+                                _br_msg = response[0] if isinstance(response, tuple) else response
+                                _br_usage = getattr(_br_msg, 'usage', None)
+                                cached = getattr(_br_usage, 'cache_read_input_tokens', 0) or 0
+                                written = getattr(_br_usage, 'cache_creation_input_tokens', 0) or 0
                             else:
                                 # OpenRouter uses prompt_tokens_details.cached_tokens
                                 details = getattr(response.usage, 'prompt_tokens_details', None)
@@ -8747,6 +8878,22 @@ class AIAgent:
                     assistant_message, finish_reason = normalize_anthropic_response(
                         response, strip_tool_prefix=self._is_anthropic_oauth
                     )
+                elif self.api_mode == "bedrock_converse":
+                    # Bedrock responses are already normalized to (assistant_message, finish_reason)
+                    # by normalize_bedrock_response() in both streaming and non-streaming paths.
+                    assistant_message, finish_reason = response
+
+                    # One-time warning if the model doesn't support tool calling
+                    if self._bedrock_tools_stripped and not getattr(self, '_bedrock_tools_warning_shown', False):
+                        self._bedrock_tools_warning_shown = True
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  This Bedrock model does not support tool calling — "
+                            f"running in chat-only mode (no file, terminal, or web tools)",
+                            force=True,
+                        )
+                        self._emit_status(
+                            "⚠️ Model does not support tool calling — running in chat-only mode"
+                        )
                 else:
                     assistant_message = response.choices[0].message
                 

@@ -2012,6 +2012,103 @@ class TestRunConversation:
         assert result["final_response"] == "Done!"
 
 
+class TestBedrockTruncationDetection:
+    """Bedrock-specific truncation detection for finish_reason='length'.
+
+    The Bedrock code path in run_conversation returns a
+    ``(assistant_message, finish_reason)`` tuple from
+    ``normalize_bedrock_response()``.  We mock ``_interruptible_api_call``
+    to return that tuple directly, bypassing all credential / HTTP
+    complexity while exercising the real truncation detection branch.
+    """
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent.api_mode = "bedrock_converse"
+        agent._bedrock_credentials = MagicMock()
+        agent._bedrock_region = "us-east-1"
+
+    @staticmethod
+    def _bedrock_response(content=None, reasoning=None):
+        """Build a normalized Bedrock response tuple (assistant_msg, finish_reason).
+
+        Mimics the shape returned by ``normalize_bedrock_response()`` with
+        ``stopReason='max_tokens'`` → ``finish_reason='length'``.
+        """
+        return (
+            SimpleNamespace(
+                content=content,
+                tool_calls=None,
+                reasoning=reasoning,
+                reasoning_content=None,
+                reasoning_details=None,
+                usage=SimpleNamespace(
+                    prompt_tokens=10, completion_tokens=100, total_tokens=110,
+                ),
+            ),
+            "length",
+        )
+
+    def test_bedrock_partial_text_not_thinking_exhausted(self, agent):
+        """Bedrock response with partial text should NOT be detected as thinking exhausted."""
+        self._setup_agent(agent)
+        resp = self._bedrock_response(content="Part 1 of response")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", return_value=resp),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Has real text content → not thinking-exhausted → falls through to
+        # the truncation/rollback path (first message, so "cannot recover").
+        # The key assertion: it must NOT be detected as thinking exhausted.
+        assert result["api_calls"] == 1
+        assert "Thinking Budget Exhausted" not in (result.get("final_response") or "")
+        assert "truncated" in result.get("error", "").lower()
+
+    def test_bedrock_only_reasoning_detected_as_thinking_exhausted(self, agent):
+        """Bedrock response with only reasoning (no text) should be detected as thinking exhausted."""
+        self._setup_agent(agent)
+        resp = self._bedrock_response(content=None, reasoning="Let me think carefully...")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", return_value=resp),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
+    def test_bedrock_empty_content_detected_as_thinking_exhausted(self, agent):
+        """Bedrock response with None content and no reasoning should be detected as thinking exhausted."""
+        self._setup_agent(agent)
+        resp = self._bedrock_response(content=None, reasoning=None)
+
+        with (
+            patch.object(agent, "_interruptible_api_call", return_value=resp),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
+
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).
 

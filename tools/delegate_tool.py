@@ -283,7 +283,6 @@ def _build_child_agent(
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
-
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -292,6 +291,7 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        platform_credentials=getattr(parent_agent, "_platform_credentials", {}),
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=getattr(parent_agent, "reasoning_config", None),

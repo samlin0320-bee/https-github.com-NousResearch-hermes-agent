@@ -504,6 +504,20 @@ def _resolve_explicit_runtime(
             "requested_provider": requested_provider,
         }
 
+    if provider == "bedrock":
+        from hermes_cli.auth import resolve_bedrock_credentials
+        creds = resolve_bedrock_credentials()
+        return {
+            "provider": "bedrock",
+            "api_mode": "bedrock_converse",
+            "base_url": "",
+            "api_key": "bedrock-sigv4-auth",
+            "uses_platform_auth": True,
+            "platform_credentials": creds,
+            "source": creds.get("source", "env"),
+            "requested_provider": requested_provider,
+        }
+
     if provider == "nous":
         state = auth_mod.get_provider_auth_state("nous") or {}
         base_url = (
@@ -750,6 +764,21 @@ def resolve_runtime_provider(
             "base_url": base_url,
             "api_key": token,
             "source": "env",
+            "requested_provider": requested_provider,
+        }
+
+    # AWS Bedrock (Converse API via SigV4 auth — supports all Bedrock models)
+    if provider == "bedrock":
+        from hermes_cli.auth import resolve_bedrock_credentials
+        creds = resolve_bedrock_credentials()
+        return {
+            "provider": "bedrock",
+            "api_mode": "bedrock_converse",
+            "base_url": "",
+            "api_key": "bedrock-sigv4-auth",
+            "uses_platform_auth": True,
+            "platform_credentials": creds,
+            "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }
 

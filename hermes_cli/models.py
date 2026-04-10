@@ -256,6 +256,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],
+    "bedrock": [
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-opus-4-5-20251101-v1:0",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "global.anthropic.claude-opus-4-6-v1",
+        "global.anthropic.claude-sonnet-4-6",
+        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
@@ -485,6 +495,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "bedrock": "AWS Bedrock",
     "custom": "Custom endpoint",
 }
 
@@ -527,6 +538,9 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
 }
 
 

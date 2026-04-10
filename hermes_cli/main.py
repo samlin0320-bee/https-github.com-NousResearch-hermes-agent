@@ -199,6 +199,16 @@ def _has_any_provider_configured() -> bool:
         _model_name = ""
     _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
 
+    # Bedrock with IAM role auth: if the user has explicitly configured
+    # provider=bedrock in config, credentials come from the instance metadata
+    # service (no env vars needed). Trust the config.
+    if _has_hermes_config:
+        _provider = ""
+        if isinstance(model_cfg, dict):
+            _provider = (model_cfg.get("provider") or "").strip().lower()
+        if _provider in ("bedrock", "aws-bedrock", "aws"):
+            return True
+
     # Check env vars (may be set by .env or shell).
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
     # often don't require an API key.
@@ -923,6 +933,8 @@ def select_provider_and_model(args=None):
         "copilot-acp": "GitHub Copilot ACP",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
+        "bedrock": "AWS Bedrock",
+        "gemini": "Google AI Studio",
         "gemini": "Google AI Studio",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
@@ -948,6 +960,7 @@ def select_provider_and_model(args=None):
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
+        ("bedrock", "AWS Bedrock (Bedrock models via AWS credentials)"),
         ("openai-codex", "OpenAI Codex"),
         ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
@@ -1060,6 +1073,8 @@ def select_provider_and_model(args=None):
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
         _model_flow_anthropic(config, current_model)
+    elif selected_provider == "bedrock":
+        _model_flow_bedrock(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
@@ -1363,6 +1378,26 @@ def _model_flow_openai_codex(config, current_model=""):
         print("No change.")
 
 
+def _parse_token_count(raw: str) -> "int | None":
+    """Parse a human-friendly token count string.
+
+    Supports: 200000, 200,000, 200k, 200K, 1m, 1M, 1.2m, 1.2M
+    Returns None if unparseable or non-positive.
+    """
+    s = raw.strip().replace(",", "").lower()
+    if not s:
+        return None
+    try:
+        if s.endswith("m"):
+            val = int(float(s[:-1]) * 1_000_000)
+        elif s.endswith("k"):
+            val = int(float(s[:-1]) * 1_000)
+        else:
+            val = int(s)
+        return val if val > 0 else None
+    except (ValueError, OverflowError):
+        return None
+
 
 _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
@@ -1511,13 +1546,9 @@ def _model_flow_custom(config):
 
     context_length = None
     if context_length_str:
-        try:
-            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
-            if context_length <= 0:
-                context_length = None
-        except ValueError:
+        context_length = _parse_token_count(context_length_str)
+        if context_length is None:
             print(f"Invalid context length: {context_length_str} — will auto-detect.")
-            context_length = None
 
     if model_name:
         _save_model_choice(model_name)
@@ -2476,6 +2507,183 @@ def _run_anthropic_oauth_flow(save_env_value):
             return True
         print("  Cancelled — install Claude Code and try again.")
         return False
+
+
+def _model_flow_bedrock(config, current_model=""):
+    """Flow for AWS Bedrock provider — configure AWS credentials and pick a model."""
+    import os
+    from hermes_cli.auth import (
+        _prompt_model_selection, _save_model_choice, deactivate_provider,
+        has_usable_secret,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    existing_access_key = (
+        get_env_value("AWS_ACCESS_KEY_ID")
+        or os.getenv("AWS_ACCESS_KEY_ID", "")
+    ).strip()
+    existing_secret_key = (
+        get_env_value("AWS_SECRET_ACCESS_KEY")
+        or os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    ).strip()
+    existing_profile = os.getenv("AWS_PROFILE", "").strip()
+    has_creds = has_usable_secret(existing_access_key) and has_usable_secret(existing_secret_key)
+
+    if has_creds:
+        print(f"  AWS Access Key ID: {existing_access_key[:8]}... ✓")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Enter new credentials")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            has_creds = False
+        elif choice == "3":
+            return
+
+    if not has_creds:
+        print()
+        print("  Configure AWS credentials for Bedrock.")
+        print()
+        print("    1. Enter AWS Access Key ID / Secret Key")
+        print("    2. Use AWS Profile (from ~/.aws/credentials)")
+        print("    3. Use IAM instance role (EC2/ECS — no keys needed)")
+        print("    4. Cancel")
+        print()
+        try:
+            auth_choice = input("  Choice [1/2/3/4]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+        if auth_choice == "1":
+            # Explicit access keys
+            print()
+            print("  Get access keys at: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html")
+            print()
+            try:
+                access_key = input("  AWS Access Key ID: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not access_key:
+                print("  Cancelled.")
+                return
+            try:
+                import getpass
+                secret_key = getpass.getpass("  AWS Secret Access Key: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not secret_key:
+                print("  Cancelled.")
+                return
+
+            save_env_value("AWS_ACCESS_KEY_ID", access_key)
+            save_env_value("AWS_SECRET_ACCESS_KEY", secret_key)
+
+            try:
+                session_token = input("  AWS Session Token (optional, press Enter to skip): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                session_token = ""
+            if session_token:
+                save_env_value("AWS_SESSION_TOKEN", session_token)
+            print("  ✓ AWS credentials saved.")
+
+        elif auth_choice == "2":
+            # AWS Profile
+            default_profile = existing_profile or "default"
+            try:
+                profile = input(f"  AWS Profile name [{default_profile}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                profile = ""
+            profile = profile or default_profile
+            save_env_value("AWS_PROFILE", profile)
+            print(f"  ✓ AWS Profile set to: {profile}")
+
+        elif auth_choice == "3":
+            # IAM instance role — nothing to configure
+            print("  ✓ Will use IAM instance role for authentication.")
+            print("    Make sure the instance has bedrock:InvokeModel and bedrock:InvokeModelWithResponseStream permissions.")
+
+        elif auth_choice == "4":
+            return
+        else:
+            print("  Invalid choice.")
+            return
+
+        # Region selection (for all auth methods)
+        existing_region = (
+            get_env_value("AWS_REGION")
+            or os.getenv("AWS_REGION", "")
+            or os.getenv("AWS_DEFAULT_REGION", "")
+        ).strip()
+        default_region = existing_region or "us-east-1"
+        try:
+            region = input(f"  AWS Region [{default_region}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            region = ""
+        region = region or default_region
+        save_env_value("AWS_REGION", region)
+        print("  ✓ AWS credentials saved.")
+
+    print()
+
+    # Model selection (_prompt_model_selection has a built-in "Enter custom model name" option)
+    model_list = _PROVIDER_MODELS.get("bedrock", [])
+    selected = _prompt_model_selection(model_list, current_model=current_model)
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "bedrock"
+        model["api_mode"] = "bedrock_converse"
+        model.pop("base_url", None)
+
+        # Check if the selected model has known metadata.  ARNs and custom
+        # model IDs may not be in the static table — prompt for context_length
+        # so the compressor uses the right value.  Matches the custom endpoint
+        # flow pattern (auto-detect when left blank).
+        try:
+            from agent.bedrock_adapter import has_bedrock_model_metadata, get_bedrock_model_id
+            resolved_id = get_bedrock_model_id(selected)
+            if not has_bedrock_model_metadata(selected):
+                print()
+                print(f"  ⚠  Model metadata not found for: {resolved_id}")
+                print()
+                try:
+                    ctx_input = input("  Context length in tokens [leave blank for auto-detect]: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    ctx_input = ""
+                if ctx_input:
+                    ctx_val = _parse_token_count(ctx_input)
+                    if ctx_val:
+                        model["context_length"] = ctx_val
+                        print(f"  ✓ Context length: {ctx_val:,}")
+                    else:
+                        print(f"  Invalid context length: {ctx_input} — will auto-detect.")
+                else:
+                    print("  Will auto-detect context length.")
+        except Exception:
+            pass  # Don't block setup if metadata check fails
+
+        save_config(cfg)
+        deactivate_provider()
+        print(f"  ✓ Default model set to: {selected}")
+        print("  ✓ Provider: AWS Bedrock")
+    else:
+        print("  No change.")
 
 
 def _model_flow_anthropic(config, current_model=""):
@@ -4312,7 +4520,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "bedrock", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

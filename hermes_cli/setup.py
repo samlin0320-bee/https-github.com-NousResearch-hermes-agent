@@ -116,6 +116,13 @@ _DEFAULT_PROVIDER_MODELS = {
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
         "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
     ],
+    "bedrock": [
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "global.anthropic.claude-opus-4-6-v1",
+        "global.anthropic.claude-sonnet-4-6",
+    ],
 }
 
 
