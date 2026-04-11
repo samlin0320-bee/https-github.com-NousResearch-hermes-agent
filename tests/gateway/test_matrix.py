@@ -1832,3 +1832,86 @@ class TestMatrixPresence:
 
 
 
+class TestMatrixMessageTypes:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_send_emote(self):
+        """send_emote should call send_message_event with m.emote."""
+        mock_client = MagicMock()
+        # mautrix returns EventID string directly
+        mock_client.send_message_event = AsyncMock(return_value="$emote1")
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_emote("!room:ex", "waves hello")
+        assert result.success is True
+        assert result.message_id == "$emote1"
+        call_args = mock_client.send_message_event.call_args
+        content = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("content")
+        assert content["msgtype"] == "m.emote"
+
+    @pytest.mark.asyncio
+    async def test_send_notice(self):
+        """send_notice should call send_message_event with m.notice."""
+        mock_client = MagicMock()
+        mock_client.send_message_event = AsyncMock(return_value="$notice1")
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_notice("!room:ex", "System message")
+        assert result.success is True
+        assert result.message_id == "$notice1"
+        call_args = mock_client.send_message_event.call_args
+        content = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("content")
+        assert content["msgtype"] == "m.notice"
+
+    @pytest.mark.asyncio
+    async def test_send_emote_empty_text(self):
+        self.adapter._client = MagicMock()
+        result = await self.adapter.send_emote("!room:ex", "")
+        assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Proxy configuration
+# ---------------------------------------------------------------------------
+
+class TestMatrixProxyConfig:
+    """Verify that MatrixAdapter resolves and propagates proxy settings."""
+
+    def _make_adapter(self, monkeypatch, proxy_env=None, proxy_var=None):
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        # Clear generic proxy vars so they don't leak from the host
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                     "https_proxy", "http_proxy", "all_proxy", "MATRIX_PROXY"):
+            monkeypatch.delenv(key, raising=False)
+        if proxy_env:
+            for k, v in proxy_env.items():
+                monkeypatch.setenv(k, v)
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import MatrixAdapter
+            cfg = PlatformConfig(enabled=True, token="syt_test",
+                                 extra={"homeserver": "https://matrix.example.org",
+                                        "user_id": "@bot:example.org"})
+            return MatrixAdapter(cfg)
+
+    def test_no_proxy_by_default(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        assert adapter._proxy_url is None
+
+    def test_matrix_proxy_env_var(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"MATRIX_PROXY": "socks5://proxy:1080"})
+        assert adapter._proxy_url == "socks5://proxy:1080"
+
+    def test_generic_proxy_fallback(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"HTTPS_PROXY": "http://corp:8080"})
+        assert adapter._proxy_url == "http://corp:8080"
+
+    def test_matrix_proxy_takes_priority(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"MATRIX_PROXY": "socks5://special:1080",
+                                                "HTTPS_PROXY": "http://generic:8080"})
+        assert adapter._proxy_url == "socks5://special:1080"

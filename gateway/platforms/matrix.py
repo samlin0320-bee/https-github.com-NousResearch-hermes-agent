@@ -11,6 +11,7 @@ Environment variables:
     MATRIX_PASSWORD             Password (alternative to access token)
     MATRIX_ENCRYPTION           Set "true" to enable E2EE
     MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
+    MATRIX_PROXY                HTTP(S) or SOCKS proxy URL for Matrix traffic
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
@@ -102,6 +103,7 @@ MAX_MESSAGE_LENGTH = 4000
 
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
+from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
@@ -260,6 +262,9 @@ class MatrixAdapter(BasePlatformAdapter):
         ).lower() not in ("false", "0", "no")
         self._pending_reactions: dict[tuple[str, str], str] = {}
 
+        # Proxy support — resolve once at init, reuse for all HTTP traffic.
+        self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
+
         # Text batching: merge rapid successive messages (Telegram-style).
         # Matrix clients split long messages around 4000 chars.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
@@ -383,10 +388,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # Ensure store dir exists for E2EE key persistence.
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Create the HTTP API layer.
+        # Create the HTTP API layer with proxy support.
+        import aiohttp as _aiohttp
+        _sess_kw, _ = proxy_kwargs_for_aiohttp(self._proxy_url)
+        client_session = _aiohttp.ClientSession(**_sess_kw)
         api = HTTPAPI(
             base_url=self._homeserver,
             token=self._access_token or "",
+            client_session=client_session,
         )
 
         # Create the client.
@@ -781,15 +790,19 @@ class MatrixAdapter(BasePlatformAdapter):
             # Try aiohttp first (always available), fall back to httpx
             try:
                 import aiohttp as _aiohttp
-                async with _aiohttp.ClientSession(trust_env=True) as http:
-                    async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
+                _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
+                async with _aiohttp.ClientSession(**_sess_kw) as http:
+                    async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30), **_req_kw) as resp:
                         resp.raise_for_status()
                         data = await resp.read()
                         ct = resp.content_type or "image/png"
                         fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
             except ImportError:
                 import httpx
-                async with httpx.AsyncClient() as http:
+                _httpx_kw: dict = {}
+                if self._proxy_url:
+                    _httpx_kw["proxy"] = self._proxy_url
+                async with httpx.AsyncClient(**_httpx_kw) as http:
                     resp = await http.get(image_url, follow_redirects=True, timeout=30)
                     resp.raise_for_status()
                     data = resp.content
