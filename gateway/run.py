@@ -2535,6 +2535,9 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "editor":
+            return await self._handle_editor_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -4594,6 +4597,94 @@ class GatewayRunner:
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _handle_editor_command(self, event: MessageEvent) -> str:
+        """Handle /editor command — open $EDITOR to compose a long message.
+
+        Opens the user's preferred editor (EDITOR, VISUAL, or auto-detected
+        nano/vim/vi) to compose a message. Save and close to send the content
+        as a message. Leave empty to cancel.
+        
+        Uses subprocess in a thread pool to avoid blocking the async loop.
+        """
+        import tempfile
+        import shlex
+        import asyncio
+        
+        source = event.source
+        adapter = self.adapters.get(source.platform)
+        
+        # Detect editor: EDITOR, VISUAL, or fallback to nano/vim/vi
+        editor = os.getenv("EDITOR") or os.getenv("VISUAL")
+        if not editor:
+            # Auto-detect: prefer nano (simplest), then vim, then vi
+            for candidate in ("nano", "vim", "vi"):
+                if os.path.exists(f"/usr/bin/{candidate}"):
+                    editor = candidate
+                    break
+            if not editor:
+                return "No editor found. Set $EDITOR or $VISUAL environment variable."
+        
+        # Create temp file for the user to edit
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
+            tmp_path = tmp.name
+            # Write a hint comment
+            tmp.write("# Compose your message below. Save and close to send.\n")
+            tmp.write("# Leave empty (delete this content) to cancel.\n")
+            tmp.write("# Lines starting with # are ignored.\n")
+            tmp.write("\n")
+        
+        # Notify user
+        editor_display = editor.split()[0] if " " in editor else editor
+        status_msg = f"Opening {editor_display}... Save and close to send, leave empty to cancel."
+        
+        try:
+            # Run editor in thread pool (subprocess.call is blocking)
+            editor_cmd = shlex.split(editor) + [tmp_path]
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: subprocess.call(editor_cmd))
+            
+            # Read the content back
+            with open(tmp_path, "r") as f:
+                content = f.read()
+            
+            # Clean up temp file
+            os.unlink(tmp_path)
+            
+            # Strip comment lines and whitespace
+            lines = []
+            for line in content.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("#") and stripped:
+                    lines.append(line)
+            
+            final_content = "\n".join(lines).strip()
+            
+            if not final_content:
+                return "Editor closed with empty content — message cancelled."
+            
+            # Queue the message for the next turn
+            if adapter:
+                from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                _quick_key = self._get_quick_key(source)
+                queued_event = _ME(
+                    text=final_content,
+                    message_type=_MT.TEXT,
+                    source=source,
+                    message_id=f"editor-{event.message_id}",
+                )
+                adapter._pending_messages[_quick_key] = queued_event
+            
+            char_count = len(final_content)
+            return f"({char_count} chars from editor) Queued for the next turn."
+            
+        except Exception as e:
+            # Clean up temp file on error
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+            return f"Editor error: {e}"
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
