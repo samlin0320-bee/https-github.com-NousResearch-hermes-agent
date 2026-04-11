@@ -16,9 +16,26 @@ Import chain (circular-import safe):
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ContextModifier:
+    """Optional structured state update returned alongside a tool result.
+
+    Tools can return a ContextModifier to request atomic state changes
+    after execution: write to memory, update todos, or inject ephemeral
+    context into the next API call.
+    """
+    memory_writes: list = None       # list of {"target": "user"|"team", "content": "..."}
+    todo_updates: list = None         # list of {"action": "add"|"remove", "text": "..."}
+    ephemeral_context: str = None     # appended to next-turn ephemeral system prompt
+
+    def is_empty(self) -> bool:
+        return not self.memory_writes and not self.todo_updates and not self.ephemeral_context
 
 
 class ToolEntry:
@@ -27,12 +44,12 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "is_concurrency_safe", "max_result_size_chars",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 is_concurrency_safe=False, max_result_size_chars=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -42,6 +59,7 @@ class ToolEntry:
         self.is_async = is_async
         self.description = description
         self.emoji = emoji
+        self.is_concurrency_safe = is_concurrency_safe
         self.max_result_size_chars = max_result_size_chars
 
 
@@ -67,7 +85,8 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
-        max_result_size_chars: int | float | None = None,
+        is_concurrency_safe: bool = False,
+        max_result_size_chars: int = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         existing = self._tools.get(name)
@@ -87,6 +106,7 @@ class ToolRegistry:
             is_async=is_async,
             description=description or schema.get("description", ""),
             emoji=emoji,
+            is_concurrency_safe=is_concurrency_safe,
             max_result_size_chars=max_result_size_chars,
         )
         if check_fn and toolset not in self._toolset_checks:
@@ -156,28 +176,54 @@ class ToolRegistry:
         entry = self._tools.get(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        if entry.schema:
+            err = _validate_args(name, args, entry.schema)
+            if err:
+                return json.dumps({"error": f"Invalid arguments: {err}"})
+        _t0 = time.monotonic()
+        _success = True
         try:
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+                result = _run_async(entry.handler(args, **kwargs))
+            else:
+                result = entry.handler(args, **kwargs)
+            # Check if result is an error response
+            try:
+                _parsed = json.loads(result) if isinstance(result, str) else None
+                if isinstance(_parsed, dict) and "error" in _parsed:
+                    _success = False
+            except Exception:
+                pass
+            return result
         except Exception as e:
+            _success = False
             logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+        finally:
+            _duration_ms = (time.monotonic() - _t0) * 1000
+            try:
+                _mc = _get_metrics()
+                if _mc is not None:
+                    _mc.record(name, duration_ms=_duration_ms, success=_success)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
-        """Return per-tool max result size, or *default* (or global default)."""
-        entry = self._tools.get(name)
-        if entry and entry.max_result_size_chars is not None:
-            return entry.max_result_size_chars
-        if default is not None:
-            return default
-        from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
-        return DEFAULT_RESULT_SIZE_CHARS
+    def get_concurrency_safe_tools(self) -> frozenset:
+        """Return frozenset of tool names that are safe to run concurrently.
+
+        Tools self-declare safety via ``is_concurrency_safe=True`` in
+        ``registry.register()``.  The caller is responsible for applying
+        any ``_NEVER_PARALLEL_TOOLS`` overrides on top of this set.
+        """
+        return frozenset(
+            name for name, entry in self._tools.items()
+            if entry.is_concurrency_safe
+        )
 
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
@@ -318,6 +364,49 @@ def tool_error(message, **extra) -> str:
     if extra:
         result.update(extra)
     return json.dumps(result, ensure_ascii=False)
+
+
+def _validate_args(tool_name: str, args: dict, schema: dict) -> Optional[str]:
+    """Validate tool call arguments against the tool's JSON Schema.
+
+    Returns None if valid, or an error string describing the problem.
+    Only validates required fields and basic type checking — does not
+    use jsonschema to keep the dependency footprint small.
+    """
+    parameters = schema.get("parameters")
+    if not parameters:
+        return None
+
+    props = parameters.get("properties", {})
+    required = parameters.get("required", [])
+
+    # Check required fields are present
+    for field in required:
+        if field not in args:
+            return f"Tool '{tool_name}': missing required argument '{field}'"
+
+    # Check types of provided fields
+    for key, value in args.items():
+        prop = props.get(key)
+        if not prop:
+            continue  # extra properties allowed
+        expected_type = prop.get("type")
+        if not expected_type:
+            continue
+        if expected_type == "string" and not isinstance(value, str):
+            return f"Tool '{tool_name}': argument '{key}' must be a string, got {type(value).__name__}"
+        if expected_type == "integer" and not isinstance(value, int):
+            return f"Tool '{tool_name}': argument '{key}' must be an integer, got {type(value).__name__}"
+        if expected_type == "number" and not isinstance(value, (int, float)):
+            return f"Tool '{tool_name}': argument '{key}' must be a number, got {type(value).__name__}"
+        if expected_type == "boolean" and not isinstance(value, bool):
+            return f"Tool '{tool_name}': argument '{key}' must be a boolean, got {type(value).__name__}"
+        if expected_type == "array" and not isinstance(value, list):
+            return f"Tool '{tool_name}': argument '{key}' must be an array, got {type(value).__name__}"
+        if expected_type == "object" and not isinstance(value, dict):
+            return f"Tool '{tool_name}': argument '{key}' must be an object, got {type(value).__name__}"
+
+    return None
 
 
 def tool_result(data=None, **kwargs) -> str:

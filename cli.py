@@ -1097,7 +1097,7 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:
-    r"""Split a leading file path token from trailing free-form text.
+    """Split a leading file path token from trailing free-form text.
 
     Supports quoted paths and backslash-escaped spaces so callers can accept
     inputs like:
@@ -1169,45 +1169,6 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     if not resolved.exists() or not resolved.is_file():
         return None
     return resolved
-
-
-def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [SYSTEM: ...] message.
-
-    Handles both completion events (notify_on_complete) and watch pattern
-    match events from the unified completion_queue.
-    """
-    evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[SYSTEM: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    # Default: completion event
-    _exit = evt.get("exit_code", "?")
-    _out = evt.get("output", "")
-    return (
-        f"[SYSTEM: Background process {_sid} completed "
-        f"(exit code {_exit}).\n"
-        f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
-    )
 
 
 def _detect_file_drop(user_input: str) -> "dict | None":
@@ -2614,6 +2575,18 @@ class HermesCLI:
             return "Installing skill..."
         if cmd_lower.startswith("/skills"):
             return "Processing skills command..."
+        if cmd_lower.startswith("/skillnew"):
+            return "Generating skill..."
+        if cmd_lower.startswith("/skillcheck"):
+            return "Checking skill quality..."
+        if cmd_lower.startswith("/skilltest"):
+            return "Running spec-anchored tests..."
+        if cmd_lower.startswith("/specnew"):
+            return "Generating HermesSpec..."
+        if cmd_lower.startswith("/specexec"):
+            return "Executing spec tasks..."
+        if cmd_lower.startswith("/revengineer"):
+            return "Scanning codebase..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
         if cmd_lower.startswith("/browser"):
@@ -5027,6 +5000,28 @@ class HermesCLI:
             self._handle_personality_command(cmd_original)
         elif canonical == "plan":
             self._handle_plan_command(cmd_original)
+        elif canonical == "agents":
+            self._handle_agents_command(cmd_original)
+        elif canonical == "explore":
+            self._handle_builtin_agent_command(cmd_original, agent_type="explore")
+        elif canonical == "verify":
+            self._handle_builtin_agent_command(cmd_original, agent_type="verify")
+        elif canonical == "research":
+            self._handle_builtin_agent_command(cmd_original, agent_type="researcher")
+        elif canonical == "graph":
+            self._handle_graph_command(cmd_original)
+        elif canonical == "selfheal":
+            self._handle_heal_command(cmd_original)
+        elif canonical == "memdir":
+            self._handle_memdir_command(cmd_original)
+        elif canonical == "learn":
+            self._handle_learn_command(cmd_original)
+        elif canonical == "skillnew":
+            self._handle_skillnew_command(cmd_original)
+        elif canonical == "skillcheck":
+            self._handle_skillcheck_command(cmd_original)
+        elif canonical == "skilltest":
+            self._handle_skilltest_command(cmd_original)
         elif canonical == "retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
@@ -5065,6 +5060,8 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "onboard":
+            self._show_onboard(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -5119,6 +5116,12 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "lineage":
+            self._show_lineage(cmd_original)
+        elif canonical == "costmap":
+            self._show_costmap()
+        elif canonical in ("marketplace", "market"):
+            self._handle_marketplace_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -5172,7 +5175,7 @@ class HermesCLI:
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
                 msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
+                    base_cmd, user_instruction, task_id=getattr(self, "session_id", None)
                 )
                 if msg:
                     skill_name = _skill_commands[base_cmd]["name"]
@@ -5250,6 +5253,324 @@ class HermesCLI:
         else:
             ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
+    def _handle_agents_command(self, cmd: str):
+        """Handle /agents — list all built-in agent types."""
+        try:
+            from agent.builtin_agents import format_agents_list
+            _cprint(format_agents_list())
+        except Exception as exc:
+            _cprint(f"  [agents] Error: {exc}")
+
+    def _handle_graph_command(self, cmd: str):
+        """Handle /graph <goal> — run full task graph pipeline."""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /graph <goal>")
+            _cprint("  Runs: decompose → explore → parallelize → synthesize → verify → heal")
+            _cprint("  Example: /graph refactor the auth system to use JWT")
+            return
+        goal = parts[1].strip()
+        msg = (
+            f"Use task_graph to accomplish this goal with the full pipeline "
+            f"(decompose, parallel agents, synthesize, verify, self-heal):\n\n{goal}\n\n"
+            f"Call: from agent.task_graph import run_task_graph, format_graph_result; "
+            f"result = run_task_graph(goal=\"{goal}\", parent_agent=self, "
+            f"explore_first=True, auto_verify=True, auto_heal=True); "
+            f"print(format_graph_result(result))"
+        )
+        _cprint(f"  🕸️  Task graph queued for: \"{goal[:60]}{'...' if len(goal) > 60 else ''}\"")
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+
+    def _handle_heal_command(self, cmd: str):
+        """Handle /selfheal — manually trigger verify+repair on last task."""
+        msg = (
+            "Trigger the self-heal loop on the last completed task in this session. "
+            "Spawn a verify agent to check the work, then spawn a repair agent if issues are found. "
+            "Report the VERDICT and what was fixed."
+        )
+        _cprint("  🔧 Self-heal cycle queued...")
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+
+    def _handle_memdir_command(self, cmd: str):
+        """Handle /memdir — show session knowledge base."""
+        try:
+            from agent.memdir import get_session_memdir
+            session_id = getattr(self, 'session_id', None) or "default"
+            memdir = get_session_memdir(session_id)
+            entries = memdir.all_entries()
+            if not entries:
+                _cprint("  📚 Session knowledge base is empty (agents haven't written any discoveries yet)")
+            else:
+                _cprint(f"  📚 Session knowledge base — {len(entries)} entries:")
+                for e in sorted(entries, key=lambda x: -x.confidence):
+                    _cprint(f"    [{e.source}] {e.key}: {e.value[:80]}{'...' if len(e.value) > 80 else ''}")
+        except Exception as exc:
+            _cprint(f"  [memdir] Error: {exc}")
+
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn — manually trigger learning loop."""
+        _cprint("  🎓 Learning loop triggered — extracting skills from this session...")
+        msg = (
+            "Review everything that happened in this conversation and extract reusable skills. "
+            "For each non-trivial workflow or pattern discovered, save it as a skill using skill_manage. "
+            "Also save any failure patterns to memory. "
+            "Report: how many skills created/updated, what they are."
+        )
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+
+    def _handle_skillnew_command(self, cmd: str):
+        """Handle /skillnew — create a new production-quality skill via skill-writer agent."""
+        parts = cmd.strip().split(maxsplit=1)
+        user_arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not user_arg:
+            _cprint("  Usage: /skillnew <name> [-- task description]")
+            _cprint("  Example: /skillnew proposal-writer -- generates client proposals from project details")
+            return
+
+        # Parse optional description after --
+        if " -- " in user_arg:
+            skill_name, task_desc = user_arg.split(" -- ", 1)
+            skill_name = skill_name.strip()
+            task_desc = task_desc.strip()
+        else:
+            skill_name = user_arg.strip()
+            task_desc = f"perform the {skill_name} task"
+
+        _cprint(f"  ✍️  Skill writer agent starting for '{skill_name}'...")
+
+        # Generate a starter template inline so the agent has a scaffold to improve
+        try:
+            from agent.skill_quality import generate_skill_template
+            template = generate_skill_template(skill_name, task_desc)
+            template_hint = f"\n\nStarter template (fill in the placeholders):\n```markdown\n{template}\n```"
+        except Exception:
+            template_hint = ""
+
+        goal = (
+            f"Create a production-quality skill named '{skill_name}' that: {task_desc}.\n\n"
+            f"Follow the 5-component structure: YAML trigger (5+ phrases + negative boundaries), "
+            f"Overview, Workflow (numbered imperative steps, no vague verbs), "
+            f"Output Format (length + tone + what NOT to include), Examples (happy-path + edge-case).\n"
+            f"Save it to ~/.hermes/skills/{skill_name}/SKILL.md using the skill_manage tool.{template_hint}"
+        )
+        msg = (
+            f"Use delegate_task to create a skill using the skill-writer agent:\n\n"
+            f"{goal}\n\n"
+            f'Call: delegate_task(goal="""{goal}""", agent_type="skill-writer")'
+        )
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+
+    def _handle_skillcheck_command(self, cmd: str):
+        """Handle /skillcheck [skill-name] — validate a skill against quality criteria."""
+        parts = cmd.strip().split(maxsplit=1)
+        skill_name = parts[1].strip() if len(parts) > 1 else ""
+
+        try:
+            from agent.skill_quality import validate_skill_file, validate_all_skills
+            from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
+
+            if skill_name:
+                # Validate one specific skill
+                skill_path = None
+                for skills_dir in get_all_skills_dirs():
+                    candidate = skills_dir / skill_name / "SKILL.md"
+                    if candidate.exists():
+                        skill_path = candidate
+                        break
+                if not skill_path:
+                    _cprint(f"  ❌ Skill '{skill_name}' not found in skills directories")
+                    return
+                report = validate_skill_file(skill_path)
+                _cprint("")
+                _cprint(report.full_report())
+            else:
+                # Validate all skills and show summary
+                reports = validate_all_skills()
+                if not reports:
+                    _cprint("  No skills found. Create one with /skillnew <name>")
+                    return
+                _cprint(f"\n  📊 Skill Quality Report — {len(reports)} skill(s)\n")
+                for r in reports:
+                    grade_icon = {"A": "✅", "B": "✅", "C": "⚠️", "D": "⚠️", "F": "❌"}.get(r.grade, "•")
+                    _cprint(f"  {grade_icon} {r.summary()}")
+                avg = sum(r.score for r in reports) // len(reports)
+                _cprint(f"\n  Average score: {avg}/100")
+                worst = [r for r in reports if r.grade in ("D", "F")]
+                if worst:
+                    _cprint(f"  Run '/skillcheck {worst[0].skill_name}' to see details on the worst skill.")
+        except Exception as exc:
+            _cprint(f"  [skillcheck] Error: {exc}")
+
+    def _handle_skilltest_command(self, cmd: str):
+        """Handle /skilltest <skill-name> — spec-anchored 4-phase TDD protocol.
+
+        Phase 1 — Spec-test writer: reads ONLY the skill contract (trigger conditions +
+                   output format, no workflow/examples). Writes discriminating tests that
+                   would FAIL on a naive implementation.
+        Phase 2 — Adversarial agent: same contract view, different context window.
+                   Designs attacks: false positives, false negatives, spec violations,
+                   edge cases, inconsistency.
+        Phase 3 — RED check: verifies tests would actually fail before any implementation.
+                   Flags cowardly tests (ones that pass a do-nothing implementation).
+        Phase 4 — Final report: consolidates findings with VERDICT: PASS/PARTIAL/FAIL.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        skill_name = parts[1].strip() if len(parts) > 1 else ""
+
+        if not skill_name:
+            _cprint("  Usage: /skilltest <skill-name>")
+            _cprint("  Runs 4-phase spec-anchored TDD: spec-tests → adversarial attacks → RED check → verdict")
+            return
+
+        # Try to load the skill spec right now so we can embed it in the goal.
+        # This gives the subagents the exact contract view without them needing to find the file.
+        skill_spec_block = ""
+        skill_path_hint = ""
+        try:
+            from agent.skill_quality import find_skill_path, extract_skill_spec
+            skill_path = find_skill_path(skill_name)
+            if skill_path:
+                skill_path_hint = str(skill_path)
+                raw = skill_path.read_text(encoding="utf-8")
+                spec = extract_skill_spec(raw)
+                skill_spec_block = (
+                    f"\n\n## Skill Contract (spec-only view — workflow & examples excluded)\n\n"
+                    f"```\n{spec}\n```\n"
+                )
+                _cprint(f"  🧪 Spec-anchored /skilltest for '{skill_name}' (found at {skill_path_hint})")
+            else:
+                _cprint(f"  🧪 Spec-anchored /skilltest for '{skill_name}' (skill file not found — agents will search)")
+        except Exception:
+            logger.warning("Could not load skill spec for %r", skill_name, exc_info=True)
+            _cprint(f"  🧪 Spec-anchored /skilltest for '{skill_name}'")
+
+        path_note = (
+            f"The skill SKILL.md is at: `{skill_path_hint}`\n"
+            if skill_path_hint
+            else f"Search ~/.hermes/skills/{skill_name}/SKILL.md and the default skills directory.\n"
+        )
+
+        goal = f"""\
+Run the spec-anchored 4-phase TDD protocol for the '{skill_name}' skill.
+{path_note}{skill_spec_block}
+
+---
+
+## Phase 1 — Spec-anchored test generation
+
+delegate_task with agent_type="spec-test-writer".
+
+Goal for that agent:
+  You have been given the contract (spec-only view) for the '{skill_name}' skill above.
+  You have NOT seen the workflow steps or examples — this is intentional.
+  Write 6-8 test cases from the spec contract ONLY.
+  Mark each COWARDLY (would pass any implementation) or DISCRIMINATING (would catch a broken one).
+  Output the summary block:
+    TESTS_WRITTEN: N
+    COWARDLY_COUNT: M
+    DISCRIMINATING_COUNT: K
+    MOST_DISCRIMINATING: [test name]
+
+## Phase 2 — Adversarial attack design
+
+delegate_task with agent_type="adversarial-skill".
+
+Goal for that agent:
+  Using the same contract above (no workflow, no examples), design 5 adversarial inputs
+  that are most likely to break a naive implementation of the '{skill_name}' skill.
+  Cover: false positive, false negative, spec violation, edge case, inconsistency.
+  Output the summary block:
+    ATTACKS_DESIGNED: N
+    MOST_DANGEROUS: [attack name]
+    ATTACK_TYPES: [comma-separated list]
+
+## Phase 3 — RED check (cowardly test audit)
+
+Review the tests from Phase 1.
+For each test marked COWARDLY: explain SPECIFICALLY what change to the test would make it
+discriminating (i.e., would cause a do-nothing implementation to fail it).
+Count: how many of the {skill_name} tests are genuinely discriminating vs cowardly?
+A test is ONLY discriminating if a skill that returns an empty string would FAIL it.
+
+## Phase 4 — Final verdict
+
+Consolidate Phases 1-3 and produce:
+
+VERDICT: PASS      — ≥ 5 discriminating tests, ≥ 3 adversarial attacks covered, 0 spec violations found
+VERDICT: PARTIAL   — some discriminating tests but gaps: list what's missing
+VERDICT: FAIL      — fewer than 3 discriminating tests OR spec contract is too vague to test against
+
+Then list:
+- The top 3 most discriminating test inputs
+- The single most dangerous adversarial attack
+- Any spec ambiguities that made testing hard (these are bugs in the skill's SKILL.md)
+"""
+
+        msg = (
+            f"Run the spec-anchored /skilltest protocol for '{skill_name}'.\n\n"
+            f"Execute each phase in order using delegate_task with the appropriate agent_type.\n\n"
+            f"{goal}"
+        )
+
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+        else:
+            _cprint("  [bold red]skilltest unavailable: input queue not initialized[/]")
+
+    def _handle_builtin_agent_command(self, cmd: str, agent_type: str):
+        """
+        Handle /explore, /verify, /research — spawn a built-in typed agent.
+
+        Translates the slash command into a delegate_task() call with the
+        appropriate agent_type so the model spawns a typed specialist.
+
+        /explore <query>  → explore agent (read-only)
+        /verify [task]    → verify agent (adversarial review of last task)
+        /research <query> → researcher agent (web research + citations)
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        user_arg = parts[1].strip() if len(parts) > 1 else ""
+
+        agent_labels = {
+            "explore": ("🔍 Explore", "exploring"),
+            "verify": ("✅ Verify", "verifying"),
+            "researcher": ("🔬 Research", "researching"),
+        }
+        label, verb = agent_labels.get(agent_type, ("🤖 Agent", "running"))
+
+        if not user_arg and agent_type != "verify":
+            _cprint(f"  Usage: /{agent_type.replace('researcher', 'research')} <{verb} what?>")
+            return
+
+        if agent_type == "verify" and not user_arg:
+            # Default verify: review the last thing the agent did
+            goal = (
+                "Adversarially verify the last task completed in this session. "
+                "Read all files that were created or modified and check for correctness, "
+                "edge cases, error handling, and security issues. "
+                "End your response with VERDICT: PASS, FAIL, or PARTIAL."
+            )
+        else:
+            goal = user_arg
+
+        # Inject the delegate_task call as a user message so the agent executes it
+        task_msg = (
+            f"Use delegate_task to {verb} the following using the {agent_type} agent:\n\n"
+            f"{goal}\n\n"
+            f"Call: delegate_task(goal=\"{goal}\", agent_type=\"{agent_type}\")"
+        )
+
+        _cprint(f"  {label} agent queued for: \"{goal[:60]}{'...' if len(goal) > 60 else ''}\"")
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(task_msg)
+        else:
+            _cprint(f"  [bold red]{label} agent unavailable: input queue not initialized[/]")
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -5910,6 +6231,49 @@ class HermesCLI:
         else:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
 
+    def _handle_fast_command(self, cmd: str):
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
+        if not self._fast_command_available():
+            _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
+            return
+
+        # Determine the branding for the current model
+        try:
+            from hermes_cli.models import _is_anthropic_fast_model
+            agent = getattr(self, "agent", None)
+            model = getattr(agent, "model", None) or getattr(self, "model", None)
+            feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+        except Exception:
+            feature_name = "Fast mode"
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            status = "fast" if self.service_tier == "priority" else "normal"
+            _cprint(f"  {_GOLD}{feature_name}: {status}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+
+        if arg in {"fast", "on"}:
+            self.service_tier = "priority"
+            saved_value = "fast"
+            label = "FAST"
+        elif arg in {"normal", "off"}:
+            self.service_tier = None
+            saved_value = "normal"
+            label = "NORMAL"
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            return
+
+        self.agent = None  # Force agent re-init with new service-tier config
+        if save_config_value("agent.service_tier", saved_value):
+            _cprint(f"  {_GOLD}✓ {feature_name} set to {label} (saved to config){_RST}")
+        else:
+            _cprint(f"  {_GOLD}✓ {feature_name} set to {label} (session only){_RST}")
+
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
         if not reasoning_text:
@@ -5952,11 +6316,6 @@ class HermesCLI:
                 approx_tokens,
                 new_tokens,
             )
-            icon = "🗜️" if summary["noop"] else "✅"
-            print(f"  {icon} {summary['headline']}")
-            print(f"     {summary['token_line']}")
-            if summary["note"]:
-                print(f"     {summary['note']}")
 
         except Exception as e:
             print(f"  ❌ Compression failed: {e}")
@@ -5975,8 +6334,8 @@ class HermesCLI:
             return
 
         # ── Rate limits (shown first when available) ────────────────
-        rl_state = agent.get_rate_limit_state()
-        if rl_state and rl_state.has_data:
+        rl_state = getattr(agent, "get_rate_limit_state", lambda: None)()
+        if rl_state and getattr(rl_state, "has_data", False):
             from agent.rate_limit_tracker import format_rate_limit_display
             print()
             print(format_rate_limit_display(rl_state))
@@ -6047,6 +6406,363 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
+    # ------------------------------------------------------------------
+    # /onboard — 3-3-3 journey stage + guidance
+    # ------------------------------------------------------------------
+
+    def _show_onboard(self, command: str = "/onboard"):
+        """Show the user's current journey stage and next recommended action."""
+        parts = command.strip().split(None, 1)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "status"
+
+        try:
+            from agent.onboarding import (
+                get_journey_stage,
+                get_onboarding_state,
+                reset_onboarding,
+            )
+        except Exception as exc:
+            print(f"  Onboarding error: {exc}")
+            return
+
+        if sub == "reset":
+            print("  This will reset your onboarding counter to 0.")
+            print("  Type 'yes' to confirm, anything else to cancel.")
+            try:
+                answer = input("  > ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer == "yes":
+                reset_onboarding()
+                print("  Counter reset. You're back at session 0 / day-1 stage.")
+            else:
+                print("  Cancelled.")
+            return
+
+        if sub == "debug":
+            state = get_onboarding_state()
+            print("\n  🔍 Onboarding state (raw)")
+            print(f"  {'─' * 40}")
+            for k, v in state.items():
+                print(f"  {k:<24} {v}")
+            print(f"  {'─' * 40}")
+            return
+
+        # Default: status
+        stage = get_journey_stage()
+        stage_icons = {1: "🌱", 2: "🔧", 3: "🚀"}
+        icon = stage_icons.get(stage.stage, "•")
+
+        print(f"\n  {icon} Hermes Journey — {stage.label} stage")
+        print(f"  {'─' * 50}")
+        print(f"  Sessions so far:  {stage.session_count}")
+        print(f"  Stage:            {stage.stage}/3  ({stage.headline})")
+        print(f"  Next command:     {stage.next_command}")
+        print()
+        print(f"  {stage.tip}")
+        print()
+
+        # Stage-specific secondary suggestions
+        if stage.stage == 1:
+            print("  Other commands worth knowing at this stage:")
+            print("    /specnew <description>   — generate a spec + context library")
+            print("    /help                    — list all available commands")
+        elif stage.stage == 2:
+            print("  Other commands worth knowing at this stage:")
+            print("    /skillnew <description>  — create a reusable skill")
+            print("    /skilltest <skill-name>  — run the 5-test protocol")
+            print("    /specnew                 — update or add a new spec")
+        else:
+            print("  Other commands worth knowing at this stage:")
+            print("    /costmap                 — per-task token cost breakdown")
+            print("    /lineage <file>          — trace which goal wrote a file")
+            print("    /skillnew                — keep automating new workflows")
+
+        print(f"  {'─' * 50}")
+        print(f"  Run /onboard reset to restart the counter from scratch.")
+
+    # ------------------------------------------------------------------
+    # /lineage <file>  — show why a file was written
+    # ------------------------------------------------------------------
+
+    def _show_lineage(self, command: str = "/lineage"):
+        """Show the write lineage (goal chain) for a file."""
+        parts = command.strip().split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            print("  Usage: /lineage <file-path>")
+            print("  Shows which agent goals caused the file to be written.")
+            return
+
+        path_arg = parts[1].strip()
+        try:
+            from agent.lineage import get_lineage
+            records = get_lineage(path_arg, days=90)
+        except Exception as exc:
+            print(f"  Lineage error: {exc}")
+            return
+
+        if not records:
+            print(f"  No lineage records found for: {path_arg}")
+            print("  (Records are created when hermes writes files via write_file.)")
+            return
+
+        print(f"\n  📄 Lineage for: {path_arg}")
+        print(f"  {'─' * 50}")
+        for i, rec in enumerate(records):
+            ts = rec.get("ts", "")[:19].replace("T", " ")
+            goal = rec.get("goal") or "(no goal recorded)"
+            session = rec.get("session_id", "")[:12]
+            model = rec.get("model", "")
+            meta = "  ".join(x for x in [session, model] if x)
+            print(f"  [{i+1}] {ts}")
+            print(f"       Goal:    {goal[:120]}")
+            if meta:
+                print(f"       Context: {meta}")
+        print(f"  {'─' * 50}")
+        print(f"  {len(records)} write(s) recorded")
+
+    # ------------------------------------------------------------------
+    # /costmap  — per-task cost breakdown for this session
+    # ------------------------------------------------------------------
+
+    def _show_costmap(self):
+        """Show per-task token cost breakdown for delegate_task calls this session."""
+        try:
+            from agent.lineage import get_session_costs
+            costs = get_session_costs()
+        except Exception as exc:
+            print(f"  Costmap error: {exc}")
+            return
+
+        if not costs:
+            print("  No delegate_task cost data yet.")
+            print("  Costs appear here after /task or delegate_task calls complete.")
+            return
+
+        print(f"\n  💰 Task Cost Map — {len(costs)} delegated task(s) this session")
+        print(f"  {'─' * 68}")
+        total_usd = 0.0
+        total_in = 0
+        total_out = 0
+        for rec in costs:
+            ts = rec.get("ts", "")[:19].replace("T", " ")
+            label = (rec.get("label") or "?")[:38]
+            model = (rec.get("model") or "?")[:24]
+            in_tok = rec.get("input_tokens", 0)
+            out_tok = rec.get("output_tokens", 0)
+            dur = rec.get("duration_seconds", 0)
+            status = rec.get("status", "?")
+            icon = "✓" if status == "completed" else "✗"
+            cost_usd = rec.get("cost_usd")
+            cost_str = f"~${cost_usd:.4f}" if cost_usd is not None else "  n/a  "
+            total_in += in_tok
+            total_out += out_tok
+            if cost_usd is not None:
+                total_usd += cost_usd
+            print(f"  {icon} {label:<38}  {cost_str:>10}  ({in_tok:>7,}in / {out_tok:>7,}out)  {dur:.1f}s")
+
+        print(f"  {'─' * 68}")
+        total_str = f"~${total_usd:.4f}" if total_usd else "  n/a  "
+        print(f"  {'TOTAL':<38}  {total_str:>10}  ({total_in:>7,}in / {total_out:>7,}out)")
+
+    # ------------------------------------------------------------------
+    # /marketplace — community skill browser + installer
+    # ------------------------------------------------------------------
+
+    def _handle_marketplace_command(self, command: str = "/marketplace"):
+        """Handle /marketplace [search|install|list|info|sync] — community skills."""
+        parts = command.strip().split(None, 2)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "list"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        if sub in ("list", "ls"):
+            self._marketplace_list()
+        elif sub == "search":
+            self._marketplace_search(arg)
+        elif sub == "install":
+            self._marketplace_install(arg)
+        elif sub == "info":
+            self._marketplace_info(arg)
+        elif sub == "sync":
+            self._marketplace_sync()
+        else:
+            print("  Usage: /marketplace <subcommand>")
+            print("  Subcommands:")
+            print("    list                  — show installed skills with provenance")
+            print("    search <query>        — search the community index")
+            print("    install <skill-id>    — install a skill from the community index")
+            print("    info <skill-id>       — show provenance for an installed skill")
+            print("    sync                  — scan skills dirs and register any untracked skills")
+
+    def _marketplace_list(self):
+        """List all installed skills with provenance metadata."""
+        try:
+            from agent.components_registry import list_installed, try_auto_register
+            from agent.skill_utils import get_all_skills_dirs
+        except Exception as exc:
+            print(f"  Marketplace error: {exc}")
+            return
+
+        # Lazy sync: register any SKILL.md files not yet in the registry
+        for skills_dir in get_all_skills_dirs():
+            if not skills_dir.is_dir():
+                continue
+            for skill_dir in skills_dir.iterdir():
+                if (skill_dir / "SKILL.md").exists():
+                    try:
+                        try_auto_register(skill_dir.name, skills_base_dir=str(skills_dir))
+                    except Exception:
+                        pass
+
+        installed = list_installed()
+        if not installed:
+            print("  No skills registered yet.")
+            print("  Create one with /skillnew, or install from the community with")
+            print("  /marketplace install <skill-id>.")
+            return
+
+        print(f"\n  📦 Installed Skills ({len(installed)})")
+        print(f"  {'─' * 64}")
+        for s in installed:
+            source_icon = {"community": "🌐", "local": "🏠", "git": "🔗", "url": "🔗"}.get(
+                s.get("source", "local"), "•"
+            )
+            sid = s.get("id", "?")
+            ver = s.get("version", "local")
+            author = s.get("author", "")
+            desc = (s.get("description") or "")[:50]
+            ts = (s.get("installed_at", "") or "")[:10]
+            author_str = f"  by {author}" if author else ""
+            print(f"  {source_icon} {sid:<28} v{ver:<10} {ts}{author_str}")
+            if desc:
+                print(f"       {desc}")
+        print(f"  {'─' * 64}")
+
+    def _marketplace_search(self, query: str):
+        """Search the community skill index."""
+        if not query:
+            print("  Usage: /marketplace search <query>")
+            return
+        print(f"  🔍 Searching community index for: {query!r} …")
+        try:
+            from hermes_cli.marketplace import fetch_index, search_index, get_index_url
+            index = fetch_index()
+            results = search_index(index, query)
+        except Exception as exc:
+            print(f"  Error fetching index: {exc}")
+            return
+
+        if not results:
+            print(f"  No community skills matched '{query}'.")
+            return
+
+        print(f"\n  Found {len(results)} skill(s)  (index: {get_index_url()[:60]})")
+        print(f"  {'─' * 64}")
+        for s in results:
+            tags = "  [" + ", ".join(s.tags[:4]) + "]" if s.tags else ""
+            print(f"  🌐 {s.id:<28} v{s.version:<8} by {s.author or '?'}")
+            print(f"       {s.description[:70]}{tags}")
+        print(f"  {'─' * 64}")
+        print("  Run /marketplace install <skill-id> to install any of the above.")
+
+    def _marketplace_install(self, skill_id: str):
+        """Install a skill from the community index."""
+        if not skill_id:
+            print("  Usage: /marketplace install <skill-id>")
+            return
+
+        print(f"  📥 Fetching community index …")
+        try:
+            from hermes_cli.marketplace import fetch_index, search_index, install_from_entry
+            index = fetch_index()
+            matches = search_index(index, skill_id)
+            # Exact id match first
+            exact = [s for s in matches if s.id == skill_id]
+            entry = exact[0] if exact else (matches[0] if matches else None)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+            return
+
+        if entry is None:
+            print(f"  No community skill found with id '{skill_id}'.")
+            print("  Use /marketplace search <query> to browse available skills.")
+            return
+
+        if entry.id != skill_id:
+            print(f"  No exact match for '{skill_id}'. Did you mean '{entry.id}'?")
+            print(f"  Run /marketplace install {entry.id} to install it.")
+            return
+
+        print(f"  Installing '{entry.id}' v{entry.version} by {entry.author or '?'} …")
+        result = install_from_entry(entry)
+        if result.success:
+            print(f"  ✅ Installed to {result.path}")
+        else:
+            if "Already installed" in result.error:
+                print(f"  ⚠️  {result.error}")
+                print(f"  Run /marketplace install {skill_id} --force (not yet supported via CLI;")
+                print("  delete the skill directory manually and re-install).")
+            else:
+                print(f"  ❌ Install failed: {result.error}")
+
+    def _marketplace_info(self, skill_id: str):
+        """Show provenance info for an installed skill."""
+        if not skill_id:
+            print("  Usage: /marketplace info <skill-id>")
+            return
+        try:
+            from agent.components_registry import get_provenance
+            rec = get_provenance(skill_id)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+            return
+
+        if rec is None:
+            print(f"  No provenance record for '{skill_id}'.")
+            print("  Run /marketplace sync to register skills from disk.")
+            return
+
+        source_icon = {"community": "🌐", "local": "🏠", "git": "🔗", "url": "🔗"}.get(
+            rec.get("source", "local"), "•"
+        )
+        print(f"\n  {source_icon} {skill_id}")
+        print(f"  {'─' * 50}")
+        for key in ("version", "source", "origin", "author", "description",
+                    "installed_at", "path", "checksum"):
+            val = rec.get(key, "")
+            if val:
+                print(f"  {key:<16} {val}")
+        print(f"  {'─' * 50}")
+
+    def _marketplace_sync(self):
+        """Scan skills directories and register any untracked skills."""
+        try:
+            from agent.components_registry import try_auto_register
+            from agent.skill_utils import get_all_skills_dirs
+        except Exception as exc:
+            print(f"  Sync error: {exc}")
+            return
+
+        registered = 0
+        skipped = 0
+        for skills_dir in get_all_skills_dirs():
+            if not skills_dir.is_dir():
+                continue
+            for skill_dir in skills_dir.iterdir():
+                if not skill_dir.is_dir():
+                    continue
+                if (skill_dir / "SKILL.md").exists():
+                    ok = try_auto_register(skill_dir.name,
+                                           skills_base_dir=str(skills_dir))
+                    if ok:
+                        registered += 1
+                    else:
+                        skipped += 1
+
+        print(f"  ✅ Sync complete — {registered} skill(s) registered, {skipped} skipped.")
+        if registered:
+            print("  Run /marketplace list to see the full inventory.")
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""
@@ -6259,15 +6975,10 @@ class HermesCLI:
         can show a live elapsed timer (the TUI poll loop already invalidates
         every ~0.15s, so the counter updates automatically).
         """
-        if event_type == "tool.completed":
-            import time as _time
-            self._tool_start_time = 0.0
-            self._invalidate()
-            return
+        # Only act on tool.started; ignore tool.completed, reasoning.available, etc.
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
-            import time as _time
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(function_name)
             label = preview or function_name
@@ -7756,6 +8467,20 @@ class HermesCLI:
         from hermes_cli.plugins import get_plugin_manager
         get_plugin_manager()._cli_ref = self
 
+        # 3-3-3 onboarding: bump session counter and surface a tip on early sessions
+        try:
+            from agent.onboarding import record_session as _record_session
+            _ob_stage = _record_session()
+            if _ob_stage.session_count <= 3:
+                _tip_line = (
+                    f"[dim]💡 Session {_ob_stage.session_count} · {_ob_stage.label} stage "
+                    f"— try [bold]{_ob_stage.next_command}[/bold] to get the most out of Hermes"
+                    f"  (/onboard for details)[/dim]"
+                )
+                self.console.print(_tip_line)
+        except Exception:
+            pass
+
         # Config file watcher — detect mcp_servers changes and auto-reload
         from hermes_cli.config import get_config_path as _get_config_path
         _cfg_path = _get_config_path()
@@ -8909,15 +9634,23 @@ class HermesCLI:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
-                            # Check for background process notifications (completions
-                            # and watch pattern matches) while agent is idle.
+                            # Check for background process completion notifications
+                            # while the agent is idle (user hasn't typed anything yet).
                             try:
                                 from tools.process_registry import process_registry
                                 if not process_registry.completion_queue.empty():
-                                    evt = process_registry.completion_queue.get_nowait()
-                                    _synth = _format_process_notification(evt)
-                                    if _synth:
-                                        self._pending_input.put(_synth)
+                                    completion = process_registry.completion_queue.get_nowait()
+                                    _exit = completion.get("exit_code", "?")
+                                    _cmd = completion.get("command", "unknown")
+                                    _sid = completion.get("session_id", "unknown")
+                                    _out = completion.get("output", "")
+                                    _synth = (
+                                        f"[SYSTEM: Background process {_sid} completed "
+                                        f"(exit code {_exit}).\n"
+                                        f"Command: {_cmd}\n"
+                                        f"Output:\n{_out}]"
+                                    )
+                                    self._pending_input.put(_synth)
                             except Exception:
                                 pass
                         continue
@@ -9035,15 +9768,25 @@ class HermesCLI:
                                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                             threading.Thread(target=_restart_recording, daemon=True).start()
 
-                        # Drain process notifications (completions + watch matches)
-                        # that arrived while the agent was running.
+                        # Drain process completion notifications — any background
+                        # process that finished with notify_on_complete while the
+                        # agent was running (or before) gets auto-injected as a
+                        # new user message so the agent can react to it.
                         try:
                             from tools.process_registry import process_registry
                             while not process_registry.completion_queue.empty():
-                                evt = process_registry.completion_queue.get_nowait()
-                                _synth = _format_process_notification(evt)
-                                if _synth:
-                                    self._pending_input.put(_synth)
+                                completion = process_registry.completion_queue.get_nowait()
+                                _exit = completion.get("exit_code", "?")
+                                _cmd = completion.get("command", "unknown")
+                                _sid = completion.get("session_id", "unknown")
+                                _out = completion.get("output", "")
+                                _synth = (
+                                    f"[SYSTEM: Background process {_sid} completed "
+                                    f"(exit code {_exit}).\n"
+                                    f"Command: {_cmd}\n"
+                                    f"Output:\n{_out}]"
+                                )
+                                self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

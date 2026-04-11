@@ -556,6 +556,24 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    # ---------------------------------------------------------------------------
+    # Pipe mode: when stdin is not a TTY (e.g. cat file | hermes "analyze"),
+    # read the piped content and combine it with any positional query argument.
+    # This enables: cat file | hermes "analyze"  and  echo "hello" | hermes
+    # ---------------------------------------------------------------------------
+    if not sys.stdin.isatty():
+        try:
+            piped_content = sys.stdin.read().strip()
+        except Exception:
+            piped_content = ""
+        if piped_content:
+            existing_query = getattr(args, "query", None) or ""
+            if existing_query:
+                combined = f"{existing_query}\n\n{piped_content}"
+            else:
+                combined = piped_content
+            args.query = combined
+
     # Resolve --continue into --resume with the latest CLI session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -635,9 +653,17 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # --assistant: enable Kairos always-on autonomous agent mode
+    if getattr(args, "assistant", False):
+        try:
+            from agent.kairos import set_kairos_active
+            set_kairos_active(True)
+        except Exception:
+            pass
+
     # Import and run the CLI
     from cli import main as cli_main
-    
+
     # Build kwargs from args
     kwargs = {
         "model": args.model,
@@ -668,6 +694,19 @@ def cmd_gateway(args):
     """Gateway management commands."""
     from hermes_cli.gateway import gateway_command
     gateway_command(args)
+
+
+def cmd_agent(args):
+    """Agent subcommands (e.g. stdio server)."""
+    agent_command = getattr(args, "agent_command", None)
+    if agent_command == "serve":
+        import asyncio
+        from agent.stdio_server import main as stdio_main
+        asyncio.run(stdio_main(session_id=getattr(args, "session_id", None)))
+    else:
+        # No subcommand given — print help
+        if hasattr(args, "_parser"):
+            args._parser.print_help()
 
 
 def cmd_whatsapp(args):
@@ -957,6 +996,7 @@ def select_provider_and_model(args=None):
 
     extended_providers = [
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+        ("gemini-oauth", "Google Gemini (OAuth — browser login, no API key needed)"),
         ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
@@ -967,7 +1007,6 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -983,23 +1022,17 @@ def select_provider_and_model(args=None):
             if not name or not base_url:
                 continue
             key = "custom:" + name.lower().replace(" ", "-")
-            custom_provider_map[key] = {
+            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+            saved_model = entry.get("model", "")
+            model_hint = f" — {saved_model}" if saved_model else ""
+            top_providers.append((key, f"{name} ({short_url}){model_hint}"))
+            _custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
                 "model": entry.get("model", ""),
             }
         return custom_provider_map
-
-    # Add user-defined custom providers from config.yaml
-    _custom_provider_map = _named_custom_provider_map(config)  # key → {name, base_url, api_key}
-    for key, provider_info in _custom_provider_map.items():
-        name = provider_info["name"]
-        base_url = provider_info["base_url"]
-        short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-        saved_model = provider_info.get("model", "")
-        model_hint = f" — {saved_model}" if saved_model else ""
-        top_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
     top_keys = {k for k, _ in top_providers}
     extended_keys = {k for k, _ in extended_providers}
@@ -1079,7 +1112,9 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider == "gemini-oauth":
+        _model_flow_gemini_oauth(config, current_model)
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -1089,35 +1124,6 @@ def select_provider_and_model(args=None):
     if selected_provider not in ("custom", "cancel", "remove-custom") \
             and not selected_provider.startswith("custom:"):
         _clear_stale_openai_base_url()
-
-
-def _clear_stale_openai_base_url():
-    """Remove OPENAI_BASE_URL from ~/.hermes/.env if the active provider is not 'custom'.
-
-    After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
-    clients (compression, vision, delegation) with provider:auto to route
-    requests to the old custom endpoint instead of the newly selected
-    provider.  See issue #5161.
-    """
-    from hermes_cli.config import get_env_value, save_env_value, load_config
-
-    cfg = load_config()
-    model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, dict):
-        provider = (model_cfg.get("provider") or "").strip().lower()
-    else:
-        provider = ""
-
-    if provider == "custom" or not provider:
-        return  # custom provider legitimately uses OPENAI_BASE_URL
-
-    stale_url = get_env_value("OPENAI_BASE_URL")
-    if stale_url:
-        save_env_value("OPENAI_BASE_URL", "")
-        print(f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url[:40]}...)"
-              if len(stale_url) > 40
-              else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})")
-
 
 def _prompt_provider_choice(choices, *, default=0):
     """Show provider selection menu with curses arrow-key navigation.
@@ -1181,10 +1187,10 @@ def _model_flow_openrouter(config, current_model=""):
         print()
 
     from hermes_cli.models import model_ids, get_pricing_for_provider
-    openrouter_models = model_ids(force_refresh=True)
+    openrouter_models = model_ids()
 
     # Fetch live pricing (non-blocking — returns empty dict on failure)
-    pricing = get_pricing_for_provider("openrouter", force_refresh=True)
+    pricing = get_pricing_for_provider("openrouter")
 
     selected = _prompt_model_selection(openrouter_models, current_model=current_model, pricing=pricing)
     if selected:
@@ -2322,6 +2328,89 @@ def _model_flow_kimi(config, current_model=""):
         print("No change.")
 
 
+def _model_flow_gemini_oauth(config, current_model=""):
+    """Google Gemini via browser OAuth (PKCE) — no API key required."""
+    from hermes_cli.auth import (
+        get_gemini_oauth_auth_status,
+        login_gemini_oauth,
+        AuthError,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+
+    DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+    GEMINI_OAUTH_MODELS = [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+    ]
+
+    print()
+    print("  Google Gemini (OAuth)")
+    print("  ─────────────────────────────────────────────────────────")
+    print("  Browser-based sign-in — no API key needed.")
+    print("  Requires a Google account with Gemini API access.")
+    print()
+
+    # Show current status
+    status = get_gemini_oauth_auth_status()
+    if status.get("logged_in"):
+        email = status.get("email", "")
+        expiring = status.get("token_expiring", False)
+        if email:
+            print(f"  Currently signed in as: {email}")
+        else:
+            print("  Currently signed in.")
+        if expiring:
+            print("  ⚠  Access token is expiring — will be refreshed automatically.")
+        print()
+        try:
+            reuse = input("  Use existing login? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reuse = "y"
+        if reuse not in ("n", "no"):
+            # Jump straight to model selection
+            selected = _prompt_model_selection(GEMINI_OAUTH_MODELS, current_model=current_model)
+            if selected:
+                _save_model_choice(selected)
+                _update_config_for_provider("gemini-oauth", DEFAULT_GEMINI_BASE_URL)
+                print(f"\n  Default model set to: {selected} (via Google Gemini OAuth)")
+            else:
+                print("  No change.")
+            return
+
+    # Not logged in (or user chose to re-login)
+    print("  Starting browser sign-in...")
+    print()
+
+    # Detect headless / SSH — fall back to manual URL
+    import os as _os
+    open_browser = not (
+        _os.environ.get("SSH_CLIENT") or _os.environ.get("SSH_TTY")
+    )
+
+    try:
+        login_gemini_oauth(open_browser=open_browser)
+    except AuthError as exc:
+        print(f"\n  Login failed: {exc}")
+        return
+    except SystemExit:
+        print("\n  Login cancelled.")
+        return
+
+    # Model selection after successful login
+    selected = _prompt_model_selection(GEMINI_OAUTH_MODELS, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("gemini-oauth", DEFAULT_GEMINI_BASE_URL)
+        print(f"\n  Default model set to: {selected} (via Google Gemini OAuth)")
+    else:
+        print("  No change.")
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
@@ -3352,11 +3441,10 @@ def _invalidate_update_cache():
     ``hermes update``, every profile is now current.
     """
     homes = []
-    # Default profile home (Docker-aware — uses /opt/data in Docker)
-    from hermes_constants import get_default_hermes_root
-    default_home = get_default_hermes_root()
+    # Default profile home
+    default_home = Path.home() / ".hermes"
     homes.append(default_home)
-    # Named profiles under <root>/profiles/
+    # Named profiles under ~/.hermes/profiles/
     profiles_root = default_home / "profiles"
     if profiles_root.is_dir():
         for entry in profiles_root.iterdir():
@@ -3808,7 +3896,7 @@ def cmd_update(args):
         # running gateway needs restarting to pick up the new code.
         try:
             from hermes_cli.gateway import (
-                is_macos, supports_systemd_services, _ensure_user_systemd_env,
+                is_macos, is_linux, _ensure_user_systemd_env,
                 find_gateway_pids,
                 _get_service_pids,
             )
@@ -3819,7 +3907,7 @@ def cmd_update(args):
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
-            if supports_systemd_services():
+            if is_linux():
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
@@ -4093,10 +4181,7 @@ def cmd_profile(args):
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
             if clone or clone_all:
-                try:
-                    profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
-                except ValueError:
-                    profile_dir_display = str(profile_dir)
+                profile_dir_display = f"~/.hermes/profiles/{name}"
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
             print()
@@ -4359,7 +4444,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -4424,6 +4509,12 @@ For more help on a command:
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists."
     )
+    chat_parser.add_argument(
+        "--assistant",
+        action="store_true",
+        default=False,
+        help="Enable Kairos always-on assistant mode (concise, proactive, continuity-aware)"
+    )
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
@@ -4485,7 +4576,7 @@ For more help on a command:
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
     # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
+    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
                              help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
@@ -4525,7 +4616,39 @@ For more help on a command:
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
     gateway_parser.set_defaults(func=cmd_gateway)
-    
+
+    # =========================================================================
+    # agent command
+    # =========================================================================
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Agent server management",
+        description="Manage the Hermes agent server (stdio transport, etc.)"
+    )
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_command")
+
+    # agent serve
+    agent_serve = agent_subparsers.add_parser(
+        "serve",
+        help="Start the agent in server mode",
+        description="Start the Hermes agent server. Reads JSON messages from stdin, "
+                    "writes JSON responses to stdout."
+    )
+    agent_serve.add_argument(
+        "--transport",
+        default="stdio",
+        choices=["stdio"],
+        help="Transport protocol to use (default: stdio)"
+    )
+    agent_serve.add_argument(
+        "--session-id",
+        dest="session_id",
+        default=None,
+        help="Session ID to use for this server instance"
+    )
+
+    agent_parser.set_defaults(func=cmd_agent)
+
     # =========================================================================
     # setup command
     # =========================================================================

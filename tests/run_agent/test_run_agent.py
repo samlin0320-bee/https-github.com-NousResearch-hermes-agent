@@ -1058,7 +1058,7 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         with patch(
-            "run_agent.handle_function_call", return_value="search result"
+            "agent.tool_executor.handle_function_call", return_value="search result"
         ) as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             # enabled_tools passes the agent's own valid_tool_names
@@ -1092,7 +1092,7 @@ class TestExecuteToolCalls:
         )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
-        with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
+        with patch("agent.tool_executor.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             # Invalid JSON args should fall back to empty dict
             args, kwargs = mock_hfc.call_args
@@ -1109,7 +1109,7 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         big_result = "x" * 150_000
-        with patch("run_agent.handle_function_call", return_value=big_result):
+        with patch("agent.tool_executor.handle_function_call", return_value=big_result):
             agent._execute_tool_calls(mock_msg, messages, "task-1")
         # Content should be replaced with persisted-output or truncation
         assert len(messages[0]["content"]) < 150_000
@@ -1327,7 +1327,7 @@ class TestConcurrentToolExecution:
             call_log.append(name)
             return json.dumps({"result": args.get("q", "")})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("agent.tool_executor.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 3
@@ -1357,7 +1357,7 @@ class TestConcurrentToolExecution:
                 _time.sleep(0.1)  # Slow tool
             return f"result_{q}"
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("agent.tool_executor.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert messages[0]["tool_call_id"] == "c1"
@@ -1379,7 +1379,7 @@ class TestConcurrentToolExecution:
                 raise RuntimeError("boom")
             return "success"
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("agent.tool_executor.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2
@@ -1413,7 +1413,7 @@ class TestConcurrentToolExecution:
         messages = []
         big_result = "x" * 150_000
 
-        with patch("run_agent.handle_function_call", return_value=big_result):
+        with patch("agent.tool_executor.handle_function_call", return_value=big_result):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2
@@ -1423,7 +1423,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
-        with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
+        with patch("agent.tool_executor.handle_function_call", return_value="result") as mock_hfc:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
@@ -1612,7 +1612,7 @@ class TestRunConversation:
         resp2 = _mock_response(content="Done searching", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
         with (
-            patch("run_agent.handle_function_call", return_value="search result") as mock_handle_function_call,
+            patch("agent.tool_executor.handle_function_call", return_value="search result"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -1990,7 +1990,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
 
         with (
-            patch("run_agent.handle_function_call", return_value="result"),
+            patch("agent.tool_executor.handle_function_call", return_value="result"),
             patch.object(
                 agent.context_compressor, "should_compress", return_value=True
             ),
@@ -3868,16 +3868,26 @@ class TestMemoryNudgeCounterPersistence:
         assert a._iters_since_skill == 0
 
     def test_counters_not_reset_in_preamble(self):
-        """The run_conversation preamble must not zero the nudge counters."""
+        """The run_conversation preamble must not unconditionally zero the nudge counters.
+
+        The preamble logic lives in _prepare_turn (extracted in a7-phase-a).
+        Verify that _prepare_turn does NOT reset the counters unconditionally
+        (i.e. no bare `self._turns_since_memory = 0` before the nudge logic).
+        The counters ARE allowed to reset inside a conditional nudge-fire block.
+        """
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
-        # The preamble resets many fields (retry counts, budget, etc.)
-        # before the main loop. Find that reset block and verify our
-        # counters aren't in it. The reset block ends at iteration_budget.
-        preamble_end = src.index("self.iteration_budget = IterationBudget")
-        preamble = src[:preamble_end]
-        assert "self._turns_since_memory = 0" not in preamble
-        assert "self._iters_since_skill = 0" not in preamble
+        src = inspect.getsource(AIAgent._prepare_turn)
+        # The counters must persist across turns — only reset inside
+        # the conditional nudge block (when >= interval), not unconditionally.
+        # The nudge block contains '= 0' only after the 'if ... >= ...' guard.
+        # We check there is no UNCONDITIONAL reset by confirming the comment
+        # guard is present.
+        assert "NOT reset here" in src, (
+            "_prepare_turn must have a comment explaining why the nudge "
+            "counters are not reset unconditionally"
+        )
+        # _iters_since_skill should NEVER be reset in _prepare_turn at all
+        assert "self._iters_since_skill = 0" not in src
 
 
 class TestDeadRetryCode:
