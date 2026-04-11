@@ -617,6 +617,7 @@ class GatewayRunner:
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         self._warn_if_docker_media_delivery_is_risky()
+        self.services: dict = {}  # Background services (non-chat event listeners)
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -2166,6 +2167,22 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        # Start background services
+        for svc_name, svc_config in self.config.services.items():
+            if not isinstance(svc_config, dict) or not svc_config.get("enabled", False):
+                continue
+            svc = self._create_service(svc_name, svc_config)
+            if svc:
+                svc.gateway_runner = self
+                try:
+                    if await svc.start():
+                        self.services[svc_name] = svc
+                        logger.info("Service %s started", svc_name)
+                    else:
+                        logger.warning("Service %s failed to start", svc_name)
+                except Exception as e:
+                    logger.error("Service %s startup error: %s", svc_name, e)
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -2594,6 +2611,16 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
 
+# Stop services first (before platforms, since services may be mid-delivery)
+        for svc_name, svc in list(self.services.items()):
+            try:
+                await svc.stop()
+                logger.info("Service %s stopped", svc_name)
+            except Exception as e:
+                logger.error("Service %s stop error: %s", svc_name, e)
+        self.services.clear()
+
+
             from gateway.status import remove_pid_file
             remove_pid_file()
 
@@ -2794,6 +2821,22 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        return None
+
+    def _create_service(self, name: str, config: dict):
+        """Factory for background services."""
+        if name == "nextcloud_notifications":
+            from gateway.services.nextcloud_notifications import NextcloudNotificationService
+            svc_config = dict(config.get("extra", config))
+            # Inherit NC credentials from Talk platform if not set
+            if not svc_config.get("nextcloud_url"):
+                talk_cfg = self.config.platforms.get(Platform.NEXTCLOUD_TALK) if hasattr(Platform, "NEXTCLOUD_TALK") else None
+                if talk_cfg and talk_cfg.extra:
+                    svc_config.setdefault("nextcloud_url", talk_cfg.extra.get("nextcloud_url", ""))
+                    svc_config.setdefault("username", talk_cfg.extra.get("username", "hermes"))
+                    svc_config.setdefault("app_password_env", talk_cfg.extra.get("app_password_env", "NEXTCLOUD_TALK_APP_PASSWORD"))
+            return NextcloudNotificationService(svc_config)
+        logger.warning("Unknown service: %s", name)
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
