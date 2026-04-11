@@ -941,6 +941,9 @@ def resolve_provider(
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        # Backward-compat aliases for the old standalone Z.AI Coding provider.
+        "zai-coding": "zai", "z-coding": "zai", "z.ai-coding": "zai",
+        "glm-coding": "zai", "zhipu-coding": "zai",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
