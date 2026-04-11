@@ -4607,9 +4607,7 @@ class GatewayRunner:
         
         Uses subprocess in a thread pool to avoid blocking the async loop.
         """
-        import tempfile
-        import shlex
-        import asyncio
+        import subprocess  # Local import (not used elsewhere in gateway)
         
         source = event.source
         adapter = self.adapters.get(source.platform)
