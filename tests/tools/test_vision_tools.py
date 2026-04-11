@@ -15,6 +15,7 @@ from tools.vision_tools import (
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
+    _extract_streamed_responses_text,
     vision_analyze_tool,
     check_vision_requirements,
     get_debug_session_info,
@@ -363,6 +364,92 @@ class TestErrorLoggingExcInfo:
             assert warning_records[0].exc_info is not None
 
 
+class _FakeAsyncStream:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __aiter__(self):
+        async def _gen():
+            for event in self._events:
+                yield event
+        return _gen()
+
+
+class _FakeStreamContext:
+    def __init__(self, events):
+        self._stream = _FakeAsyncStream(events)
+
+    async def __aenter__(self):
+        return self._stream
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestResponsesStreamFallback:
+    @pytest.mark.asyncio
+    async def test_extract_streamed_responses_text_concatenates_deltas(self):
+        events = [
+            MagicMock(type="response.output_item.added"),
+            MagicMock(type="response.output_text.delta", delta="一只"),
+            MagicMock(type="response.output_text.delta", delta="猫坐在"),
+            MagicMock(type="response.output_text.delta", delta="椅子上"),
+            MagicMock(type="response.completed"),
+        ]
+
+        text = await _extract_streamed_responses_text(_FakeAsyncStream(events))
+        assert text == "一只猫坐在椅子上"
+
+    @pytest.mark.asyncio
+    async def test_vision_analyze_uses_responses_stream_fallback_when_chat_content_empty(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        empty_response = MagicMock()
+        empty_choice = MagicMock()
+        empty_choice.message.content = None
+        empty_choice.message.reasoning = None
+        empty_choice.message.reasoning_content = None
+        empty_response.choices = [empty_choice]
+
+        stream_events = [
+            MagicMock(type="response.output_item.added"),
+            MagicMock(type="response.output_text.delta", delta="图中是一只"),
+            MagicMock(type="response.output_text.delta", delta="趴着的猫。"),
+            MagicMock(type="response.completed"),
+        ]
+        fake_client = MagicMock()
+        fake_client.responses.stream.return_value = _FakeStreamContext(stream_events)
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=[empty_response, empty_response],
+            ) as mock_llm,
+            patch(
+                "tools.vision_tools.resolve_vision_provider_client",
+                return_value=("custom", fake_client, "stream-model"),
+            ) as mock_resolve,
+        ):
+            result = await vision_analyze_tool(str(img), "describe this", "explicit-model")
+
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["analysis"] == "图中是一只趴着的猫。"
+        assert mock_llm.await_count == 2
+        mock_resolve.assert_called_once_with(async_mode=True)
+        fake_client.responses.stream.assert_called_once()
+        kwargs = fake_client.responses.stream.call_args.kwargs
+        assert kwargs["model"] == "explicit-model"
+        assert kwargs["input"][0]["content"][0] == {"type": "input_text", "text": "describe this"}
+        assert kwargs["input"][0]["content"][1]["type"] == "input_image"
+
+
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):
@@ -448,7 +535,7 @@ class TestVisionRequirements:
     def test_check_requirements_accepts_codex_auth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "auth.json").write_text(
-            '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"codex-access-token","refresh_token":"codex-refresh-token"}}}}'
+            '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token": "codex-...oken","refresh_token": "codex-...oken"}}}}'
         )
         # config.yaml must reference the codex provider so vision auto-detect
         # falls back to the active provider via _read_main_provider().
@@ -461,7 +548,13 @@ class TestVisionRequirements:
         monkeypatch.delenv("AUXILIARY_VISION_PROVIDER", raising=False)
         monkeypatch.delenv("CONTEXT_VISION_PROVIDER", raising=False)
 
-        assert check_vision_requirements() is True
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("openai-codex", MagicMock(), "gpt-5.4"),
+        ) as mock_resolve:
+            assert check_vision_requirements() is True
+
+        mock_resolve.assert_called_once_with()
 
     def test_debug_session_info_returns_dict(self):
         info = get_debug_session_info()
