@@ -141,6 +141,53 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _infer_minimal_toolsets(goal: str, context: Optional[str], parent_toolsets: List[str]) -> Optional[List[str]]:
+    """Infer a narrower child toolset for obvious low-scope tasks.
+
+    Returns None when inference is inconclusive (caller should preserve
+    compatibility by falling back to legacy inheritance behavior).
+    """
+    if not parent_toolsets:
+        return None
+
+    text = f"{goal or ''}\n{context or ''}".lower()
+
+    file_keywords = (
+        "read ", "open ", "file", "files", "compare", "diff", "duplicate",
+        "skill", "skills", "inspect", "analyze", "analyse", "review",
+        "json", "yaml", "toml", "markdown", "md",
+    )
+    terminal_keywords = (
+        "run ", "pytest", "test", "build", "compile", "install", "lint",
+        "command", "shell", "terminal", "cli", "git ", "npm", "pip",
+        "uv ", "docker", "make ", "benchmark", "profile",
+    )
+    web_keywords = (
+        "web", "website", "online", "internet", "search", "docs", "documentation",
+        "latest", "news", "lookup", "reference",
+    )
+
+    chosen: List[str] = []
+
+    def _add(ts: str) -> None:
+        if ts in parent_toolsets and ts not in chosen:
+            chosen.append(ts)
+
+    if any(k in text for k in file_keywords):
+        _add("file")
+    if any(k in text for k in terminal_keywords):
+        _add("terminal")
+        # Terminal-only subtasks typically still need read/write access.
+        _add("file")
+    if any(k in text for k in web_keywords):
+        _add("web")
+
+    if not chosen:
+        return None
+
+    return _strip_blocked_tools(chosen)
+
+
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -255,26 +302,31 @@ def _build_child_agent(
     # so we must derive effective toolsets from the parent's loaded tools.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
+        parent_toolsets = list(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
         # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools
-        parent_toolsets = {
+        parent_toolsets = sorted({
             ts for name in parent_agent.valid_tool_names
             if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
+        })
     else:
-        parent_toolsets = set(DEFAULT_TOOLSETS)
+        parent_toolsets = list(DEFAULT_TOOLSETS)
 
+    parent_toolset_set = set(parent_toolsets)
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+        child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolset_set])
     else:
-        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+        inferred_toolsets = _infer_minimal_toolsets(goal, context, parent_toolsets)
+        if inferred_toolsets:
+            child_toolsets = inferred_toolsets
+        elif parent_enabled is not None:
+            child_toolsets = _strip_blocked_tools(list(parent_enabled))
+        elif parent_toolsets:
+            child_toolsets = _strip_blocked_tools(list(parent_toolsets))
+        else:
+            child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
@@ -998,7 +1050,9 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
+                    "If omitted, Hermes tries to infer a minimal subset from the task "
+                    "(for example file-only for comparison tasks), then falls back to "
+                    "inheriting parent toolsets when inference is ambiguous. "
                     "Common patterns: ['terminal', 'file'] for code work, "
                     "['web'] for research, ['terminal', 'file', 'web'] for "
                     "full-stack tasks."
