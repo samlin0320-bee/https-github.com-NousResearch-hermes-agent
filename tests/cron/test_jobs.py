@@ -29,7 +29,8 @@ from cron.jobs import (
     recover_stale_inflight,
     save_job_output,
     update_delivery_error_if_latest,
-    _linux_pid_is_alive,
+    _get_inflight_owner_state,
+    _pid_is_alive,
 )
 
 
@@ -1064,12 +1065,100 @@ class TestOrphanedInFlightRecovery:
 
 
 class TestOwnerLivenessHelpers:
-    def test_linux_pid_is_alive_treats_zombie_as_dead(self, monkeypatch):
+    def test_pid_is_alive_treats_linux_zombie_as_dead(self, monkeypatch):
         monkeypatch.setattr("cron.jobs.sys.platform", "linux")
         monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
         monkeypatch.setattr("cron.jobs._linux_process_state", lambda pid: "Z")
 
-        assert _linux_pid_is_alive(12345) is False
+        assert _pid_is_alive(12345) is False
+
+    def test_pid_is_alive_on_darwin_uses_posix_kill(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+
+        assert _pid_is_alive(12345) is True
+
+    def test_get_inflight_owner_state_on_darwin_confirms_matching_identity(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-1")
+
+        state, reason = _get_inflight_owner_state(
+            {
+                "owner_pid": 12345,
+                "owner_boot_id": "boot-1",
+                "owner_process_start": "start-1",
+            }
+        )
+
+        assert state == "alive"
+        assert "fingerprint matches" in reason
+
+    def test_get_inflight_owner_state_on_darwin_detects_pid_reuse(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-2")
+
+        state, reason = _get_inflight_owner_state(
+            {
+                "owner_pid": 12345,
+                "owner_boot_id": "boot-1",
+                "owner_process_start": "start-1",
+            }
+        )
+
+        assert state == "mismatch"
+        assert "fingerprint mismatch" in reason
+
+    def test_claim_due_jobs_records_darwin_owner_fingerprint(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.getpid", lambda: 24680)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-1")
+
+        job = create_job(prompt="Darwin claim", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        assert [entry["id"] for entry in claimed] == [job["id"]]
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["in_flight"]["owner_pid"] == 24680
+        assert updated["in_flight"]["owner_boot_id"] == "boot-1"
+        assert updated["in_flight"]["owner_process_start"] == "start-1"
+
+    def test_recover_stale_inflight_recovers_darwin_pid_reuse_early(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.getpid", lambda: 24680)
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-1")
+
+        job = create_job(prompt="Darwin orphan", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-2")
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+
+        assert recovered == 1
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert "orphan_recovered" in (updated.get("last_error") or "")
 
 
 class TestSaveJobOutput:
