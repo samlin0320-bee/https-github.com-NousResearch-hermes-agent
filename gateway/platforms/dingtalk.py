@@ -81,6 +81,26 @@ _CARD_DEGRADE_DEFAULT_MS = 30 * 60 * 1000  # 30 min
 # Stop commands
 STOP_COMMANDS = {"stop", "/stop", "esc", "quit", "exit", "cancel", "取消", "停止"}
 
+# Emotion reaction payloads for DingTalk emotion API
+_EMOTION_THINKING = {
+    "emotionName": "thinking",
+    "textEmotion": {
+        "emotionId": "2659900",
+        "emotionName": "thinking",
+        "text": "thinking",
+        "backgroundId": "im_bg_1",
+    },
+}
+_EMOTION_DONE = {
+    "emotionName": "finished",
+    "textEmotion": {
+        "emotionId": "2659900",
+        "emotionName": "finished",
+        "text": "finished",
+        "backgroundId": "im_bg_1",
+    },
+}
+
 
 
 def check_dingtalk_requirements() -> bool:
@@ -126,6 +146,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Message deduplication
         self._seen_messages: Dict[str, float] = {}
         self._last_cleanup: float = 0
+
+        # msg_id → conversation_id mapping for emotion API
+        self._msg_conversations: Dict[str, str] = {}
 
         # Session webhooks: chat_id -> (webhook_url, expiry_time)
         self._session_webhooks: Dict[str, str] = {}
@@ -236,6 +259,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             await self._http_client.aclose()
             self._http_client = None
 
+        self._msg_conversations.clear()
+
         self._stream_client = None
         self._session_webhooks.clear()
         self._webhook_expiry.clear()
@@ -320,6 +345,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         expired = [k for k, v in self._seen_messages.items() if v < cutoff]
         for k in expired:
             del self._seen_messages[k]
+            self._msg_conversations.pop(k, None)
 
     # ================================================================
     # Webhook management
@@ -375,6 +401,10 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         chat_id = conversation_id or sender_id
         chat_type = "group" if is_group else "dm"
+
+        # Store conversation_id for emotion API (needs original openConversationId)
+        if msg_id and conversation_id:
+            self._msg_conversations[msg_id] = conversation_id
 
         # Check allowed senders
         if self._allowed_senders and sender_staff_id not in self._allowed_senders:
@@ -1198,13 +1228,78 @@ class DingTalkAdapter(BasePlatformAdapter):
     # Processing lifecycle hooks
     # ================================================================
 
+    def _reactions_enabled(self) -> bool:
+        """Check if DingTalk emotion reactions are enabled."""
+        return os.getenv("DINGTALK_REACTIONS", "false").lower() not in ("false", "0", "no")
+
+    async def _emotion_call(
+        self, msg_id: str, conversation_id: str,
+        action: str, emotion: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Call DingTalk emotion API (reply or recall)."""
+        if not self._http_client or not self._access_token:
+            logger.warning("[%s] Emotion %s skipped: no http_client or access_token", self.name, action)
+            return False
+        emotion = emotion or _EMOTION_THINKING
+        try:
+            url = f"https://{_DINGTALK_API_HOST}/v1.0/robot/emotion/{action}"
+            payload = {
+                "robotCode": self._client_id,
+                "openMsgId": msg_id,
+                "openConversationId": conversation_id,
+                "emotionType": 2,
+                **emotion,
+            }
+            resp = await self._http_client.post(
+                url,
+                headers={
+                    "x-acs-dingtalk-access-token": self._access_token,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=5.0,
+            )
+            if resp.status_code < 300:
+                logger.info("[%s] Emotion %s succeeded for msg %s", self.name, action, msg_id)
+                return True
+            logger.warning(
+                "[%s] Emotion %s failed: HTTP %d body=%s",
+                self.name, action, resp.status_code, resp.text[:200],
+            )
+            return False
+        except Exception as e:
+            logger.warning("[%s] Emotion %s error: %s", self.name, action, e)
+            return False
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Hook called when background processing begins."""
-        pass
+        """Attach thinking reaction when processing begins."""
+        if not self._reactions_enabled():
+            return
+        msg_id = getattr(event, "message_id", None)
+        conv_id = self._msg_conversations.get(msg_id) if msg_id else None
+        logger.info(
+            "[%s] on_processing_start msg_id=%s conv_id=%s reactions=%s",
+            self.name, msg_id, conv_id, self._reactions_enabled(),
+        )
+        if msg_id and conv_id:
+            await self._emotion_call(msg_id, conv_id, "reply")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes."""
-        pass
+        """Swap thinking reaction for completion emotion."""
+        if not self._reactions_enabled():
+            return
+        msg_id = getattr(event, "message_id", None)
+        conv_id = self._msg_conversations.get(msg_id) if msg_id else None
+        logger.info(
+            "[%s] on_processing_complete msg_id=%s conv_id=%s outcome=%s",
+            self.name, msg_id, conv_id, outcome,
+        )
+        if not (msg_id and conv_id):
+            return
+        await self._emotion_call(msg_id, conv_id, "recall")
+        if outcome != ProcessingOutcome.CANCELLED:
+            await self._emotion_call(msg_id, conv_id, "reply", _EMOTION_DONE)
+        self._msg_conversations.pop(msg_id, None)
 
     # ================================================================
     # Utilities
