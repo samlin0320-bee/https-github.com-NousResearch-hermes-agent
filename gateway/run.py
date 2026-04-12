@@ -1998,6 +1998,7 @@ class GatewayRunner:
 
             self.adapters.clear()
             self._running_agents.clear()
+            self._running_agents_ts.clear()
             self._pending_messages.clear()
             self._pending_approvals.clear()
             self._shutdown_event.set()
@@ -2476,6 +2477,7 @@ class GatewayRunner:
                 self._pending_messages.pop(_quick_key, None)
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
+                self._running_agents_ts.pop(_quick_key, None)
                 # Mark session suspended so the next message starts fresh
                 # instead of resuming the stuck context (#7536).
                 self.session_store.suspend_session(_quick_key)
@@ -2502,6 +2504,7 @@ class GatewayRunner:
                 # doesn't think an agent is still active.
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
+                self._running_agents_ts.pop(_quick_key, None)
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting
@@ -2553,6 +2556,7 @@ class GatewayRunner:
                     # Force-clean the sentinel so the session is unlocked.
                     if _quick_key in self._running_agents:
                         del self._running_agents[_quick_key]
+                    self._running_agents_ts.pop(_quick_key, None)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key[:20])
                     return "⚡ Force-stopped. The agent was still starting — session unlocked."
                 # Queue the message so it will be picked up after the
@@ -4048,6 +4052,7 @@ class GatewayRunner:
             # Force-clean the sentinel so the session is unlocked.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
+            self._running_agents_ts.pop(session_key, None)
             self.session_store.suspend_session(session_key)
             logger.info("HARD STOP (pending) for session %s — suspended, sentinel cleared", session_key[:20])
             return "⚡ Force-stopped. The agent was still starting — your next message will start fresh."
@@ -4057,6 +4062,7 @@ class GatewayRunner:
             # keep it locked forever.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
+            self._running_agents_ts.pop(session_key, None)
             self.session_store.suspend_session(session_key)
             return "⚡ Force-stopped. Your next message will start a fresh session."
         else:
@@ -5917,6 +5923,7 @@ class GatewayRunner:
         # Clear any running agent for this session key
         if session_key in self._running_agents:
             del self._running_agents[session_key]
+        self._running_agents_ts.pop(session_key, None)
 
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
