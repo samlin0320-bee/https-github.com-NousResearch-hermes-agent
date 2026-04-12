@@ -4145,7 +4145,13 @@ class GatewayRunner:
             return "⏳ Gateway restart already in progress..."
 
         active_agents = self._running_agent_count()
-        self.request_restart(detached=True, via_service=False)
+        # When running under systemd (INVOCATION_ID is set), exit with the
+        # service restart code so systemd restarts us cleanly.  Otherwise
+        # fall back to detached self-restart for standalone / launchd setups.
+        if os.environ.get("INVOCATION_ID"):
+            self.request_restart(detached=False, via_service=True)
+        else:
+            self.request_restart(detached=True, via_service=False)
         if active_agents:
             return f"⏳ Draining {active_agents} active agent(s) before restart..."
         return "♻ Restarting gateway..."
