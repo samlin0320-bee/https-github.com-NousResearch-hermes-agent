@@ -934,6 +934,96 @@ class DingTalkAdapter(BasePlatformAdapter):
             text = f"{caption}\n{text}"
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send audio as a native DingTalk voice message."""
+        if not os.path.exists(audio_path):
+            return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+
+        media_id = await self._upload_media(audio_path, "voice")
+        if not media_id:
+            return await super().send_voice(chat_id, audio_path, caption, reply_to)
+
+        # Get voice duration (approximate)
+        duration_ms = await self._get_audio_duration_ms(audio_path)
+
+        payload = {
+            "msgtype": "voice",
+            "voice": {"media_id": media_id, "duration": str(duration_ms)},
+        }
+        return await self._send_webhook_payload(chat_id, payload, metadata)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a video natively via DingTalk."""
+        if not os.path.exists(video_path):
+            return SendResult(success=False, error=f"Video file not found: {video_path}")
+
+        media_id = await self._upload_media(video_path, "video")
+        if not media_id:
+            return await super().send_video(chat_id, video_path, caption, reply_to)
+
+        payload = {
+            "msgtype": "video",
+            "video": {"media_id": media_id},
+        }
+        return await self._send_webhook_payload(chat_id, payload, metadata)
+
+    async def _get_audio_duration_ms(self, file_path: str) -> int:
+        """Estimate audio duration in ms via ffprobe, fallback 1000."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                "-of", "csv=p=0", file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                return int(float(stdout.decode().strip()) * 1000)
+        except (FileNotFoundError, ValueError):
+            pass
+        return 1000
+
+    async def _send_webhook_payload(
+        self,
+        chat_id: str,
+        payload: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a raw payload (voice/video/file) via session webhook."""
+        metadata = metadata or {}
+        session_webhook = metadata.get("session_webhook") or self._get_webhook(chat_id)
+        if not session_webhook:
+            return SendResult(success=False, error="No session_webhook available")
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+        try:
+            resp = await self._http_client.post(session_webhook, json=payload, timeout=15.0)
+            if resp.status_code < 300:
+                result_data = resp.json() if resp.text else {}
+                if result_data.get("errcode", 0) == 0:
+                    return SendResult(success=True, message_id=result_data.get("messageId", uuid.uuid4().hex[:12]))
+                return SendResult(success=False, error=f"DingTalk error: {result_data}")
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error("[%s] Webhook send error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_document(
         self,
         chat_id: str,
