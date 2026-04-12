@@ -405,11 +405,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         sender_nick = getattr(message, "sender_nick", "") or sender_id
         sender_staff_id = getattr(message, "sender_staff_id", "") or ""
 
-        logger.info(
-            "[%s] Sender info: sender_id=%s sender_staff_id=%s conversation_id=%s conv_type=%s",
-            self.name, sender_id[:40], sender_staff_id, conversation_id[:40], conversation_type,
-        )
-
         chat_id = conversation_id or sender_id
         chat_type = "group" if is_group else "dm"
 
@@ -1030,11 +1025,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         else:
             sender_id = self._chat_senders.get(chat_id, chat_id)
             payload["userIds"] = [sender_id]
-
-        logger.info(
-            "[%s] Proactive media: url=%s payload=%s",
-            self.name, url, _json.dumps(payload, ensure_ascii=False),
-        )
 
         try:
             resp = await self._http_client.post(
