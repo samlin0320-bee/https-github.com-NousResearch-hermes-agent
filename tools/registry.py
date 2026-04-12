@@ -27,12 +27,12 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "max_result_size_chars", "can_memoize",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 max_result_size_chars=None, can_memoize=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -43,6 +43,7 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        self.can_memoize = can_memoize
 
 
 class ToolRegistry:
@@ -68,6 +69,7 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        can_memoize: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         existing = self._tools.get(name)
@@ -88,6 +90,7 @@ class ToolRegistry:
             description=description or schema.get("description", ""),
             emoji=emoji,
             max_result_size_chars=max_result_size_chars,
+            can_memoize=can_memoize,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
