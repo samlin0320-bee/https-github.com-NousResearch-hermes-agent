@@ -45,6 +45,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.status import read_runtime_status
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +335,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._start_time: float = time.monotonic()  # For uptime calculation
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -502,8 +504,50 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
-        """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        """GET /health — liveness probe with uptime and gateway state."""
+        uptime = time.monotonic() - self._start_time
+        body: dict = {
+            "status": "ok",
+            "platform": "hermes-agent",
+            "uptime_seconds": round(uptime, 1),
+        }
+        try:
+            status = read_runtime_status()
+            if status:
+                body["gateway_state"] = status.get("gateway_state", "unknown")
+        except Exception:
+            body["gateway_state"] = "unknown"
+        return web.json_response(body)
+
+    async def _handle_ready(self, request: "web.Request") -> "web.Response":
+        """GET /ready — readiness probe; 503 when gateway is not running."""
+        try:
+            status = read_runtime_status()
+        except Exception:
+            status = None
+        if status and status.get("gateway_state") == "running":
+            return web.json_response({"ready": True})
+        return web.json_response({"ready": False}, status=503)
+
+    async def _handle_status(self, request: "web.Request") -> "web.Response":
+        """GET /v1/status — comprehensive gateway diagnostics."""
+        uptime = time.monotonic() - self._start_time
+        try:
+            status = read_runtime_status()
+        except Exception:
+            status = None
+        body: dict = {
+            "uptime_seconds": round(uptime, 1),
+        }
+        if status:
+            body["gateway_state"] = status.get("gateway_state", "unknown")
+            body["platforms"] = status.get("platforms", {})
+            body["active_agents"] = status.get("active_agents", 0)
+        else:
+            body["gateway_state"] = "unknown"
+            body["platforms"] = {}
+            body["active_agents"] = 0
+        return web.json_response(body)
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -1735,6 +1779,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
+            self._app.router.add_get("/ready", self._handle_ready)
+            self._app.router.add_get("/v1/status", self._handle_status)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
