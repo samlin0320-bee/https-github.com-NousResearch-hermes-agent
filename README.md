@@ -147,10 +147,8 @@ Quick start for contributors:
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv venv --python 3.11
-source venv/bin/activate
-uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
+uv sync --locked --extra all --extra dev
+uv run python -m pytest tests/ -q
 ```
 
 > **RL Training (optional):** To work on the RL/Tinker-Atropos integration:
