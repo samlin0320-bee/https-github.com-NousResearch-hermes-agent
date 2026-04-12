@@ -563,6 +563,13 @@ class GatewayRunner:
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
+        # Crash-recovery checkpoint — records in-flight agent runs to disk
+        # so that a gateway restart can detect interrupted sessions.
+        from gateway.session import SessionCrashCheckpoint
+        from hermes_constants import HERMES_HOME
+        _checkpoint_path = os.path.join(HERMES_HOME, "agent_checkpoints.json")
+        self._crash_checkpoint = SessionCrashCheckpoint(path=_checkpoint_path)
+
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
         # system prompt (including memory) every turn — breaking prefix cache
@@ -1489,13 +1496,28 @@ class GatewayRunner:
             logger.warning("Process checkpoint recovery: %s", e)
 
         # Suspend sessions that were active when the gateway last exited.
-        # This prevents stuck sessions from being blindly resumed on restart,
-        # which can create an unrecoverable loop (#7536).  Suspended sessions
-        # auto-reset on the next incoming message, giving the user a clean start.
+        # First, use the crash checkpoint for precise detection of sessions
+        # that were in-flight.  Then fall back to the time-window heuristic
+        # for sessions that started before the checkpoint was introduced.
+        try:
+            interrupted = self._crash_checkpoint.get_active_sessions()
+            if interrupted:
+                for session_key in interrupted:
+                    self.session_store.suspend_session(session_key)
+                logger.info(
+                    "Suspended %d interrupted session(s) from crash checkpoint",
+                    len(interrupted),
+                )
+                # Clear the checkpoint now that we've processed it
+                self._crash_checkpoint.clear()
+        except Exception as e:
+            logger.warning("Crash checkpoint recovery failed: %s", e)
+
+        # Fallback: time-window heuristic for sessions not tracked by checkpoint.
         try:
             suspended = self.session_store.suspend_recently_active()
             if suspended:
-                logger.info("Suspended %d in-flight session(s) from previous run", suspended)
+                logger.info("Suspended %d recently-active session(s) from previous run", suspended)
         except Exception as e:
             logger.warning("Session suspension on startup failed: %s", e)
 
@@ -7996,6 +8018,7 @@ class GatewayRunner:
                 await asyncio.sleep(0.05)
             if session_key:
                 self._running_agents[session_key] = agent_holder[0]
+                self._crash_checkpoint.mark_running(session_key, session_id=session_id)
                 if self._draining:
                     self._update_runtime_status("draining")
         
@@ -8374,6 +8397,7 @@ class GatewayRunner:
                 del self._running_agents[session_key]
             if session_key:
                 self._running_agents_ts.pop(session_key, None)
+                self._crash_checkpoint.mark_completed(session_key)
             if self._draining:
                 self._update_runtime_status("draining")
             
