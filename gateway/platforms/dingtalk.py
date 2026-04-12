@@ -149,6 +149,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         # msg_id → conversation_id mapping for emotion API
         self._msg_conversations: Dict[str, str] = {}
+        # chat_id → sender_id for proactive DM sends
+        self._chat_senders: Dict[str, str] = {}
 
         # Session webhooks: chat_id -> (webhook_url, expiry_time)
         self._session_webhooks: Dict[str, str] = {}
@@ -260,6 +262,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             self._http_client = None
 
         self._msg_conversations.clear()
+        self._chat_senders.clear()
 
         self._stream_client = None
         self._session_webhooks.clear()
@@ -405,6 +408,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Store conversation_id for emotion API (needs original openConversationId)
         if msg_id and conversation_id:
             self._msg_conversations[msg_id] = conversation_id
+        # Store sender_id for proactive DM sends
+        if chat_id and sender_id:
+            self._chat_senders[chat_id] = sender_id
 
         # Check allowed senders
         if self._allowed_senders and sender_staff_id not in self._allowed_senders:
@@ -943,7 +949,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send audio as a native DingTalk voice message."""
+        """Send audio as a native DingTalk voice message via proactive API."""
         if not os.path.exists(audio_path):
             return SendResult(success=False, error=f"Audio file not found: {audio_path}")
 
@@ -951,14 +957,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not media_id:
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
 
-        # Get voice duration (approximate)
         duration_ms = await self._get_audio_duration_ms(audio_path)
-
-        payload = {
-            "msgtype": "voice",
-            "voice": {"media_id": media_id, "duration": str(duration_ms)},
-        }
-        return await self._send_webhook_payload(chat_id, payload, metadata)
+        return await self._send_proactive_media(
+            chat_id, media_id, "sampleAudio",
+            extra={"mediaId": media_id, "duration": str(duration_ms)},
+        )
 
     async def send_video(
         self,
@@ -969,7 +972,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video natively via DingTalk."""
+        """Send a video natively via DingTalk proactive API."""
         if not os.path.exists(video_path):
             return SendResult(success=False, error=f"Video file not found: {video_path}")
 
@@ -977,11 +980,68 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not media_id:
             return await super().send_video(chat_id, video_path, caption, reply_to)
 
-        payload = {
-            "msgtype": "video",
-            "video": {"media_id": media_id},
+        filename = os.path.basename(video_path)
+        ext = os.path.splitext(video_path)[1].lstrip(".") or "mp4"
+        return await self._send_proactive_media(
+            chat_id, media_id, "sampleFile",
+            extra={"mediaId": media_id, "fileName": filename, "fileType": ext},
+        )
+
+    async def _send_proactive_media(
+        self,
+        chat_id: str,
+        media_id: str,
+        msg_key: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send media via DingTalk proactive message API (groupMessages/send or oToMessages/batchSend)."""
+        if not await self._refresh_access_token():
+            return SendResult(success=False, error="No access token")
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        import json as _json
+        is_group = chat_id.startswith("cid")
+        url = (
+            f"https://{_DINGTALK_API_HOST}/v1.0/robot/groupMessages/send"
+            if is_group
+            else f"https://{_DINGTALK_API_HOST}/v1.0/robot/oToMessages/batchSend"
+        )
+
+        payload: Dict[str, Any] = {
+            "robotCode": self._client_id,
+            "msgKey": msg_key,
+            "msgParam": _json.dumps(extra or {}),
         }
-        return await self._send_webhook_payload(chat_id, payload, metadata)
+        if is_group:
+            payload["openConversationId"] = chat_id
+        else:
+            sender_id = self._chat_senders.get(chat_id, chat_id)
+            payload["userIds"] = [sender_id]
+
+        try:
+            resp = await self._http_client.post(
+                url,
+                headers={
+                    "x-acs-dingtalk-access-token": self._access_token,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                data = resp.json()
+                errcode = data.get("errcode", 0)
+                if errcode == 0:
+                    logger.info("[%s] Proactive media sent: %s to %s", self.name, msg_key, chat_id)
+                    return SendResult(success=True, message_id=data.get("processQueryKey", ""))
+                logger.warning("[%s] Proactive media error: %s", self.name, data)
+                return SendResult(success=False, error=f"DingTalk error: {data}")
+            logger.warning("[%s] Proactive media HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error("[%s] Proactive media exception: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def _get_audio_duration_ms(self, file_path: str) -> int:
         """Estimate audio duration in ms via ffprobe, fallback 1000."""
@@ -998,31 +1058,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         except (FileNotFoundError, ValueError):
             pass
         return 1000
-
-    async def _send_webhook_payload(
-        self,
-        chat_id: str,
-        payload: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a raw payload (voice/video/file) via session webhook."""
-        metadata = metadata or {}
-        session_webhook = metadata.get("session_webhook") or self._get_webhook(chat_id)
-        if not session_webhook:
-            return SendResult(success=False, error="No session_webhook available")
-        if not self._http_client:
-            return SendResult(success=False, error="HTTP client not initialized")
-        try:
-            resp = await self._http_client.post(session_webhook, json=payload, timeout=15.0)
-            if resp.status_code < 300:
-                result_data = resp.json() if resp.text else {}
-                if result_data.get("errcode", 0) == 0:
-                    return SendResult(success=True, message_id=result_data.get("messageId", uuid.uuid4().hex[:12]))
-                return SendResult(success=False, error=f"DingTalk error: {result_data}")
-            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
-        except Exception as e:
-            logger.error("[%s] Webhook send error: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
 
     async def send_document(
         self,
