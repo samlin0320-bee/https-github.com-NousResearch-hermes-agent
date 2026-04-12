@@ -5205,6 +5205,11 @@ class HermesCLI:
         except Exception as e:
             print(f"(._.) Receipts error: {e}")
 
+    def _handle_workorders_command(self, cmd: str):
+        """Handle /workorders slash command — H007 direct work-order queue control-plane."""
+        from hermes_cli.work_orders import handle_work_orders_slash
+        handle_work_orders_slash(cmd)
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -5445,6 +5450,8 @@ class HermesCLI:
             self._handle_cron_command(cmd_original)
         elif canonical == "receipts":
             self._handle_receipts_command(cmd_original)
+        elif canonical == "workorders":
+            self._handle_workorders_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

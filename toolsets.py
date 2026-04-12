@@ -50,6 +50,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Execution receipt ledger + scheduled work-order queue
+    "execution_receipts", "execution_work_orders",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -175,7 +177,19 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
-    
+
+    "execution_receipts": {
+        "description": "Execution receipt ledger operations: list/query/prune/reconcile delegated execution receipts",
+        "tools": ["execution_receipts"],
+        "includes": []
+    },
+
+    "execution_work_orders": {
+        "description": "Durable H007 direct work-order queue: enqueue/query/run/retry/resume scheduled direct terminal work orders",
+        "tools": ["execution_work_orders"],
+        "includes": []
+    },
+
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
@@ -239,6 +253,7 @@ TOOLSETS = {
             "browser_vision", "browser_console",
             "todo", "memory",
             "session_search",
+            "execution_receipts", "execution_work_orders",
             "execute_code", "delegate_task",
         ],
         "includes": []
@@ -266,6 +281,8 @@ TOOLSETS = {
             "todo", "memory",
             # Session history search
             "session_search",
+            # Execution receipt ledger + scheduled work-order queue
+            "execution_receipts", "execution_work_orders",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management
