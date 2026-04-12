@@ -302,15 +302,17 @@ class TestGatewayMode:
         tag = uuid.uuid4().hex[:8]
 
         gw_logger = logging.getLogger("gateway.run")
-        file_logger = logging.getLogger("tools.file_tools")
-        gw_logger.propagate = True
-        file_logger.propagate = True
-        logging.getLogger("tools").propagate = True
-        file_logger.setLevel(logging.NOTSET)
+        tool_logger = logging.getLogger("tools.file_tools")
+
+        gw_logger.setLevel(logging.NOTSET)
+        tool_logger.setLevel(logging.NOTSET)
         logging.getLogger("tools").setLevel(logging.NOTSET)
+        gw_logger.propagate = True
+        tool_logger.propagate = True
+        logging.getLogger("tools").propagate = True
 
         gw_logger.info("gateway msg %s", tag)
-        file_logger.info("file msg %s", tag)
+        tool_logger.info("file msg %s", tag)
 
         for h in logging.getLogger().handlers:
             h.flush()
