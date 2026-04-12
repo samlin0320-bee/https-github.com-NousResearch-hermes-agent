@@ -296,27 +296,29 @@ class TestGatewayMode:
 
     def test_agent_log_still_receives_all(self, hermes_home):
         """agent.log (catch-all) still receives gateway AND tool records."""
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway", force=True)
+
+        import uuid
+        tag = uuid.uuid4().hex[:8]
 
         gw_logger = logging.getLogger("gateway.run")
         file_logger = logging.getLogger("tools.file_tools")
-        # Ensure propagation and levels are clean (cross-test pollution defense)
         gw_logger.propagate = True
         file_logger.propagate = True
         logging.getLogger("tools").propagate = True
         file_logger.setLevel(logging.NOTSET)
         logging.getLogger("tools").setLevel(logging.NOTSET)
 
-        gw_logger.info("gateway msg")
-        file_logger.info("file msg")
+        gw_logger.info("gateway msg %s", tag)
+        file_logger.info("file msg %s", tag)
 
         for h in logging.getLogger().handlers:
             h.flush()
 
         agent_log = hermes_home / "logs" / "agent.log"
         content = agent_log.read_text()
-        assert "gateway msg" in content
-        assert "file msg" in content
+        assert f"gateway msg {tag}" in content
+        assert f"file msg {tag}" in content
 
 
 class TestSessionContext:
