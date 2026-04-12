@@ -498,6 +498,13 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     return None
 
 
+# Module-level weak reference to the active GatewayRunner instance.
+# Used by tools (e.g. send_message) that need to route through a live
+# adapter for plugin platforms.  Set in GatewayRunner.__init__().
+import weakref as _weakref
+_gateway_runner_ref: _weakref.ref = lambda: None
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -521,8 +528,10 @@ class GatewayRunner:
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
+        global _gateway_runner_ref
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        _gateway_runner_ref = _weakref.ref(self)
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -1512,7 +1521,17 @@ class GatewayRunner:
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                logger.warning("No adapter available for %s", platform.value)
+                # Distinguish between missing builtin deps and missing plugin
+                _pval = platform.value
+                _builtin_names = {m.value for m in Platform.__members__.values()}
+                if _pval not in _builtin_names:
+                    logger.warning(
+                        "No adapter for '%s' — is the plugin installed? "
+                        "(platform is enabled in config.yaml but no plugin registered it)",
+                        _pval,
+                    )
+                else:
+                    logger.warning("No adapter available for %s", _pval)
                 continue
             
             # Set up message + fatal error handlers
@@ -2043,7 +2062,11 @@ class GatewayRunner:
         platform: Platform, 
         config: Any
     ) -> Optional[BasePlatformAdapter]:
-        """Create the appropriate adapter for a platform."""
+        """Create the appropriate adapter for a platform.
+
+        Checks the platform_registry first (plugin adapters), then falls
+        through to the built-in if/elif chain for core platforms.
+        """
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",
@@ -2053,6 +2076,16 @@ class GatewayRunner:
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
             )
+
+        # ── Plugin-registered platforms (checked first) ──────────────
+        try:
+            from gateway.platform_registry import platform_registry
+            adapter = platform_registry.create_adapter(platform.value, config)
+            if adapter is not None:
+                return adapter
+        except Exception as e:
+            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+        # Fall through to built-in adapters below
 
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
@@ -2244,6 +2277,19 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
         }
+
+        # Plugin platforms: check the registry for auth env var names
+        if source.platform not in platform_env_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(source.platform.value)
+                if entry:
+                    if entry.allowed_users_env:
+                        platform_env_map[source.platform] = entry.allowed_users_env
+                    if entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = entry.allow_all_env
+            except Exception:
+                pass
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
@@ -6361,8 +6407,16 @@ class GatewayRunner:
 
         # Block non-messaging platforms (API server, webhooks, ACP)
         platform = event.source.platform
-        if platform not in self._UPDATE_ALLOWED_PLATFORMS:
-            return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
+        _allowed = self._UPDATE_ALLOWED_PLATFORMS
+        # Plugin platforms with allow_update_command=True are also allowed
+        if platform not in _allowed:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(platform.value)
+                if not entry or not entry.allow_update_command:
+                    return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
+            except Exception:
+                return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
 
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
