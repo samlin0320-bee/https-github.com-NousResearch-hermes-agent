@@ -405,15 +405,20 @@ class DingTalkAdapter(BasePlatformAdapter):
         sender_nick = getattr(message, "sender_nick", "") or sender_id
         sender_staff_id = getattr(message, "sender_staff_id", "") or ""
 
+        logger.info(
+            "[%s] Sender info: sender_id=%s sender_staff_id=%s conversation_id=%s conv_type=%s",
+            self.name, sender_id[:40], sender_staff_id, conversation_id[:40], conversation_type,
+        )
+
         chat_id = conversation_id or sender_id
         chat_type = "group" if is_group else "dm"
 
         # Store conversation_id for emotion API (needs original openConversationId)
         if msg_id and conversation_id:
             self._msg_conversations[msg_id] = conversation_id
-        # Store sender_id for proactive DM sends
-        if chat_id and sender_id:
-            self._chat_senders[chat_id] = sender_id
+        # Store sender_staff_id for proactive DM sends (staff_id format works as userIds)
+        if chat_id and sender_staff_id:
+            self._chat_senders[chat_id] = sender_staff_id
         # Store chat type (group/dm) for proactive API routing
         if chat_id:
             self._chat_types[chat_id] = chat_type
