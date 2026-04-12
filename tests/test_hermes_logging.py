@@ -304,12 +304,10 @@ class TestGatewayMode:
         gw_logger = logging.getLogger("gateway.run")
         tool_logger = logging.getLogger("tools.file_tools")
 
-        gw_logger.setLevel(logging.NOTSET)
-        tool_logger.setLevel(logging.NOTSET)
-        logging.getLogger("tools").setLevel(logging.NOTSET)
-        gw_logger.propagate = True
-        tool_logger.propagate = True
-        logging.getLogger("tools").propagate = True
+        for name in ("gateway", "gateway.run", "tools", "tools.file_tools"):
+            _lg = logging.getLogger(name)
+            _lg.setLevel(logging.NOTSET)
+            _lg.propagate = True
 
         gw_logger.info("gateway msg %s", tag)
         tool_logger.info("file msg %s", tag)
