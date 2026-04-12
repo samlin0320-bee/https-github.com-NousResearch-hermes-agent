@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Tuple
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -2790,15 +2790,21 @@ class GatewayRunner:
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
         """Prepare inbound event text for the agent.
 
         Keep the normal inbound path and the queued follow-up path on the same
         preprocessing pipeline so sender attribution, image enrichment, STT,
         document notes, reply context, and @ references all behave the same.
+
+        Returns a tuple of (message_text, message_content).  message_content is
+        a list of content parts for native vision passthrough when the active
+        model supports it; otherwise it is None and message_text contains any
+        vision enrichments.
         """
         history = history or []
         message_text = event.text or ""
+        message_content: Optional[List[Dict[str, Any]]] = None
 
         _is_shared_thread = (
             source.chat_type != "dm"
@@ -2819,10 +2825,67 @@ class GatewayRunner:
                     audio_paths.append(path)
 
             if image_paths:
-                message_text = await self._enrich_message_with_vision(
-                    message_text,
-                    image_paths,
-                )
+                # Decide whether to passthrough images natively or pre-describe them
+                try:
+                    from run_agent import AIAgent
+                    _gw_cfg = _load_gateway_config()
+                    _model, _runtime = self._resolve_session_agent_runtime(
+                        source=source, user_config=_gw_cfg
+                    )
+                    _provider = _runtime.get("provider") or (""
+                        if "/" not in _model else _model.split("/", 1)[0])
+                    _api_mode = _runtime.get("api_mode") or "chat_completions"
+                    _supports_native = AIAgent._check_native_vision_support(
+                        _model, _provider, _api_mode
+                    )
+                except Exception:
+                    _supports_native = False
+
+                if _supports_native:
+                    _parts = []
+                    if message_text:
+                        _parts.append({"type": "text", "text": message_text})
+
+                    def _encode_image_for_native_vision(_img_path: str) -> Dict[str, Any]:
+                        import base64
+                        from pathlib import Path
+
+                        _path = Path(_img_path)
+                        _img_data = _path.read_bytes()
+                        _b64 = base64.b64encode(_img_data).decode("ascii")
+                        _suffix = _path.suffix.lower()
+                        _mime = {
+                            ".png": "image/png",
+                            ".gif": "image/gif",
+                            ".webp": "image/webp",
+                            ".bmp": "image/bmp",
+                        }.get(_suffix, "image/jpeg")
+                        return {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{_mime};base64,{_b64}"},
+                        }
+
+                    _encode_failed = False
+                    for _img_path in image_paths:
+                        try:
+                            _parts.append(
+                                await asyncio.to_thread(_encode_image_for_native_vision, _img_path)
+                            )
+                        except Exception as _img_err:
+                            _encode_failed = True
+                            logger.warning("Failed to encode image for native vision: %s", _img_err)
+                            break
+
+                    if not _encode_failed and (len(_parts) > 1 or (_parts and _parts[0].get("type") == "image_url")):
+                        message_content = _parts
+                    else:
+                        message_text = await self._enrich_message_with_vision(
+                            message_text, image_paths
+                        )
+                else:
+                    message_text = await self._enrich_message_with_vision(
+                        message_text, image_paths
+                    )
 
             if audio_paths:
                 message_text = await self._enrich_message_with_transcription(
@@ -2938,7 +3001,7 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
-        return message_text
+        return message_text, message_content
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -3380,7 +3443,7 @@ class GatewayRunner:
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_inbound_message_text(
+        message_text, message_content = await self._prepare_inbound_message_text(
             event=event,
             source=source,
             history=history,
@@ -3407,6 +3470,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                message_content=message_content,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -3796,6 +3860,11 @@ class GatewayRunner:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
+                try:
+                    if hasattr(_old_agent, "shutdown_memory_provider"):
+                        _old_agent.shutdown_memory_provider()
+                except Exception:
+                    pass
                 try:
                     if hasattr(_old_agent, "close"):
                         _old_agent.close()
@@ -7057,6 +7126,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        message_content: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7727,7 +7797,12 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(
+                    message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                    user_message_content=message_content,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
@@ -8215,10 +8290,11 @@ class GatewayRunner:
                 updated_history = result.get("messages", history)
                 next_source = source
                 next_message = pending
+                next_message_content = None
                 next_message_id = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    next_message = await self._prepare_inbound_message_text(
+                    next_message, next_message_content = await self._prepare_inbound_message_text(
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
@@ -8236,6 +8312,7 @@ class GatewayRunner:
                     session_key=session_key,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    message_content=next_message_content,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
