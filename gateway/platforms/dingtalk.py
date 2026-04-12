@@ -151,6 +151,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._msg_conversations: Dict[str, str] = {}
         # chat_id → sender_id for proactive DM sends
         self._chat_senders: Dict[str, str] = {}
+        # chat_id → chat_type ("group" or "dm") for proactive API routing
+        self._chat_types: Dict[str, str] = {}
 
         # Session webhooks: chat_id -> (webhook_url, expiry_time)
         self._session_webhooks: Dict[str, str] = {}
@@ -263,6 +265,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         self._msg_conversations.clear()
         self._chat_senders.clear()
+        self._chat_types.clear()
 
         self._stream_client = None
         self._session_webhooks.clear()
@@ -411,6 +414,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Store sender_id for proactive DM sends
         if chat_id and sender_id:
             self._chat_senders[chat_id] = sender_id
+        # Store chat type (group/dm) for proactive API routing
+        if chat_id:
+            self._chat_types[chat_id] = chat_type
 
         # Check allowed senders
         if self._allowed_senders and sender_staff_id not in self._allowed_senders:
@@ -1001,7 +1007,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="HTTP client not initialized")
 
         import json as _json
-        is_group = chat_id.startswith("cid")
+        chat_type = self._chat_types.get(chat_id, "")
+        is_group = chat_type == "group"
         url = (
             f"https://{_DINGTALK_API_HOST}/v1.0/robot/groupMessages/send"
             if is_group
@@ -1018,6 +1025,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         else:
             sender_id = self._chat_senders.get(chat_id, chat_id)
             payload["userIds"] = [sender_id]
+
+        logger.info(
+            "[%s] Proactive media: url=%s payload=%s",
+            self.name, url, _json.dumps(payload, ensure_ascii=False),
+        )
 
         try:
             resp = await self._http_client.post(
