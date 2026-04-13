@@ -1,6 +1,9 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import sys
+import threading
+import time
 import pytest
 from pathlib import Path
 
@@ -8,6 +11,8 @@ from tools.memory_tool import (
     MemoryStore,
     memory_tool,
     _scan_memory_content,
+    fcntl,
+    msvcrt,
     ENTRY_DELIMITER,
     MEMORY_SCHEMA,
 )
@@ -258,3 +263,121 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+# =========================================================================
+# Cross-platform file locking
+# =========================================================================
+
+class TestFileLockBasic:
+    def test_lock_acquired_and_released(self, tmp_path):
+        target = tmp_path / "test.md"
+        target.write_text("hello", encoding="utf-8")
+
+        with MemoryStore._file_lock(target):
+            pass
+
+        assert target.read_text(encoding="utf-8") == "hello"
+
+    def test_lock_file_created(self, tmp_path):
+        target = tmp_path / "test.md"
+        target.write_text("hello", encoding="utf-8")
+
+        with MemoryStore._file_lock(target):
+            lock_path = target.with_suffix(target.suffix + ".lock")
+            assert lock_path.exists()
+
+    def test_repeated_lock_cycles(self, tmp_path):
+        target = tmp_path / "test.md"
+        target.write_text("data", encoding="utf-8")
+
+        for _ in range(5):
+            with MemoryStore._file_lock(target):
+                pass
+
+        assert target.read_text(encoding="utf-8") == "data"
+
+
+class TestFileLockPlatformModules:
+    def test_exactly_one_backend_available(self):
+        assert fcntl is not None or msvcrt is not None, (
+            "Neither fcntl nor msvcrt is available — file locking broken"
+        )
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_windows_uses_msvcrt(self):
+        assert msvcrt is not None, "msvcrt should be available on Windows"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix-only")
+    def test_unix_uses_fcntl(self):
+        assert fcntl is not None, "fcntl should be available on Unix"
+
+
+@pytest.mark.skipif(msvcrt is None, reason="msvcrt not available on this platform")
+class TestFileLockMsvcrtEdgeCases:
+    """Windows msvcrt.locking quirks — skipped entirely on non-Windows."""
+
+    def test_lock_file_has_content_on_windows(self, tmp_path):
+        """msvcrt.locking requires the file to have at least 1 byte."""
+        target = tmp_path / "test.md"
+        target.write_text("data", encoding="utf-8")
+        lock_path = target.with_suffix(target.suffix + ".lock")
+
+        with MemoryStore._file_lock(target):
+            assert lock_path.stat().st_size > 0, (
+                "Lock file must have content for msvcrt.locking"
+            )
+
+    def test_lock_file_created_with_content_even_when_empty(self, tmp_path):
+        """Lock file is seeded with content even if it doesn't exist yet."""
+        target = tmp_path / "test.md"
+        target.write_text("data", encoding="utf-8")
+        lock_path = target.with_suffix(target.suffix + ".lock")
+
+        if lock_path.exists():
+            lock_path.unlink()
+
+        with MemoryStore._file_lock(target):
+            assert lock_path.exists()
+            assert lock_path.stat().st_size > 0
+
+
+class TestFileLockExclusion:
+    def test_lock_excludes_concurrent_access(self, tmp_path):
+        target = tmp_path / "test.md"
+        target.write_text("data", encoding="utf-8")
+
+        acquired = []
+        blocked = threading.Event()
+        release = threading.Event()
+
+        def try_lock():
+            with MemoryStore._file_lock(target):
+                acquired.append(True)
+                blocked.set()
+                release.wait(timeout=5)
+
+        t = threading.Thread(target=try_lock, daemon=True)
+        t.start()
+
+        assert blocked.wait(timeout=3), "Background thread did not acquire lock in time"
+
+        start = time.monotonic()
+        got_it = False
+
+        def delayed_release():
+            time.sleep(0.3)
+            release.set()
+
+        threading.Thread(target=delayed_release, daemon=True).start()
+
+        with MemoryStore._file_lock(target):
+            got_it = True
+            elapsed = time.monotonic() - start
+
+        assert got_it
+        assert elapsed >= 0.2, (
+            f"Lock acquired too quickly ({elapsed:.3f}s) — likely not exclusive"
+        )
+
+        t.join(timeout=5)
