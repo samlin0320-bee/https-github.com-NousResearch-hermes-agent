@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
+from hermes_cli.provider_contracts import model_context_window
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,10 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "volcengine",
+    "volcengine-coding-plan",
+    "byteplus",
+    "byteplus-coding-plan",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -227,6 +232,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "ark.cn-beijing.volces.com": "volcengine",
+    "ark.ap-southeast.bytepluses.com": "byteplus",
 }
 
 
@@ -1011,11 +1018,19 @@ def get_model_context_length(
         ctx = _resolve_nous_context_length(model)
         if ctx:
             return ctx
+    if effective_provider in {"volcengine", "byteplus"}:
+        ctx = model_context_window(model)
+        if ctx:
+            return ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
             return ctx
+
+    ctx = model_context_window(model)
+    if ctx:
+        return ctx
 
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
