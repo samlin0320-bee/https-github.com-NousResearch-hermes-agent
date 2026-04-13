@@ -91,12 +91,12 @@ class TestRealSubagentInterrupt(unittest.TestCase):
             child_started.set()
             return original_run(self_agent, *args, **kwargs)
 
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)
+        mock_client.close = MagicMock()
+
         def run_delegate():
             try:
-                mock_client = MagicMock()
-                mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)
-                mock_client.close = MagicMock()
-
                 child = AIAgent(
                     base_url="http://localhost:1",
                     api_key="test-key",
@@ -126,7 +126,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
 
         # Patches on the main thread so they always unwind, even if
         # the daemon thread is killed or raises.
-        mock_openai = patch('run_agent.OpenAI', return_value=MagicMock())
+        mock_openai = patch('run_agent.OpenAI', return_value=mock_client)
         mock_prompt = patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent")
         mock_run = patch.object(AIAgent, 'run_conversation', patched_run)
 
