@@ -1,7 +1,8 @@
 import asyncio
+import os
 import shutil
 import subprocess
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -13,7 +14,10 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 
 
 @pytest.mark.asyncio
+@patch.dict(os.environ, {}, clear=False)
 async def test_restart_command_while_busy_requests_drain_without_interrupt():
+    # Ensure INVOCATION_ID is not set so the non-service path is taken
+    os.environ.pop("INVOCATION_ID", None)
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     event = MessageEvent(
