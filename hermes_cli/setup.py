@@ -2137,7 +2137,7 @@ def _setup_nextcloud_talk():
     print_info("Steps:")
     print_info("  1. On your Nextcloud server, run:")
     print_info("     sudo -u www-data php occ talk:bot:install Hermes \\")
-    print_info("         <32-char-secret> http://<lxc-ip>:8765/talk/webhook \\")
+    print_info("         <32-char-secret> http://<hermes-host>:8765/talk/webhook \\")
     print_info("         Hermes AI Agent --feature=webhook --feature=response")
     print_info("  2. The command outputs a bot ID. Attach the bot to each")
     print_info("     conversation with:")
