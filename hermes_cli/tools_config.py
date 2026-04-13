@@ -288,6 +288,15 @@ TOOL_CATEGORIES = {
                 "post_setup": "agent_browser",
             },
             {
+                "name": "Steel",
+                "tag": "Run fleet of super fast stealth browsers",
+                "env_vars": [
+                    {"key": "STEEL_API_KEY", "prompt": "Steel API key", "url": "https://steel.dev"},
+                ],
+                "browser_provider": "steel",
+                "post_setup": "browserbase",
+            },
+            {
                 "name": "Camofox",
                 "tag": "Local anti-detection browser (Firefox/Camoufox)",
                 "env_vars": [

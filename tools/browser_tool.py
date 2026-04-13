@@ -81,6 +81,7 @@ from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
+from tools.browser_providers.steel import SteelProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
 # Camofox local anti-detection browser backend (optional).
@@ -245,6 +246,7 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
     "firecrawl": FirecrawlProvider,
+    "steel": SteelProvider,
 }
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
@@ -1366,21 +1368,50 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title_lower = title.lower()
         
         if any(pattern in title_lower for pattern in blocked_patterns):
+            provider = _get_cloud_provider()
+            provider_name = provider.provider_name() if provider else "cloud browser"
+            if provider_name == "Browserbase":
+                stealth_hint = "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
+            elif provider_name == "Steel":
+                stealth_hint = "3) Enable proxy (STEEL_USE_PROXY=true) or CAPTCHA solving (STEEL_SOLVE_CAPTCHA=true), "
+            else:
+                stealth_hint = "3) Check your cloud browser provider's stealth/proxy settings, "
             response["bot_detection_warning"] = (
                 f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
                 "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
+                f"{stealth_hint}"
                 "4) Some sites have very aggressive bot detection that may be unavoidable."
             )
+            if provider_name == "Steel":
+                response["bot_detection_steel_hint"] = (
+                    "Try using the steel_scrape tool instead — it uses Steel's server-side "
+                    "extraction which may bypass bot detection that blocks browser sessions."
+                )
         
+        # Include session viewer URL on first navigation (Steel provides this)
+        if is_first_nav and session_info.get("session_viewer_url"):
+            response["session_viewer_url"] = session_info["session_viewer_url"]
+            response["session_viewer_hint"] = (
+                "Share the session_viewer_url with the user so they can "
+                "watch the browser session live in their browser."
+            )
+
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            has_proxies = features.get("proxies") or features.get("proxy")
+            if not has_proxies:
+                provider = _get_cloud_provider()
+                provider_name = provider.provider_name() if provider else "your cloud browser provider"
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
-                    "Consider upgrading Browserbase plan for proxy support."
+                    f"Consider enabling proxy support in {provider_name}."
+                )
+            if features.get("steel"):
+                response["steel_hint"] = (
+                    "This session runs on Steel. You also have the steel_scrape tool "
+                    "available for fast content extraction without browser interaction."
                 )
             response["stealth_features"] = active_features
 

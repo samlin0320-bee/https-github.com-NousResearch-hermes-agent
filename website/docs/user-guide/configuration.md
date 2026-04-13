@@ -1115,7 +1115,7 @@ browser:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
 ```
 
-The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
+The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, Steel, and local Chrome CDP setup.
 
 ## Timezone
 
