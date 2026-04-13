@@ -721,11 +721,12 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        preview_message: str = "last",
     ) -> List[Dict[str, Any]]:
-        """List sessions with preview (most recent user message) and last active timestamp.
+        """List sessions with preview (first or most recent user message) and last active timestamp.
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
-        message_count, preview (first 60 chars of the most recent user message),
+        message_count, preview (first 60 chars of the selected user message),
         last_active (timestamp of last message).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
@@ -733,6 +734,15 @@ class SessionDB:
         By default, child sessions (subagent runs, compression continuations)
         are excluded.  Pass ``include_children=True`` to include them.
         """
+        preview_message = str(preview_message or "last").strip().lower()
+        if preview_message not in {"first", "last"}:
+            raise ValueError("preview_message must be 'first' or 'last'")
+        preview_order_sql = (
+            "m.timestamp, m.id"
+            if preview_message == "first"
+            else "m.timestamp DESC, m.id DESC"
+        )
+
         where_clauses = []
         params = []
 
@@ -754,7 +764,7 @@ class SessionDB:
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
+                     ORDER BY {preview_order_sql} LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 COALESCE(

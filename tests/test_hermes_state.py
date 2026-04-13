@@ -1165,6 +1165,20 @@ class TestListSessionsRich:
         assert len(sessions) == 1
         assert "Actually, resume the deployment debugging" in sessions[0]["preview"]
 
+    def test_preview_can_use_first_user_message(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Original opening request")
+        db.append_message("s1", "assistant", "Working on it.")
+        db.append_message("s1", "user", "Latest follow-up request")
+        sessions = db.list_sessions_rich(preview_message="first")
+        assert len(sessions) == 1
+        assert "Original opening request" in sessions[0]["preview"]
+
+    def test_preview_message_mode_must_be_valid(self, db):
+        db.create_session("s1", "cli")
+        with pytest.raises(ValueError, match="preview_message must be 'first' or 'last'"):
+            db.list_sessions_rich(preview_message="newest")
+
     def test_preview_truncated_at_60(self, db):
         db.create_session("s1", "cli")
         long_msg = "A" * 100

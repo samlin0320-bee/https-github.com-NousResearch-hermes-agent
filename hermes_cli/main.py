@@ -5581,13 +5581,22 @@ Examples:
             return
 
         action = args.sessions_action
+        display_cfg = load_config().get("display", {})
+        preview_message = str(display_cfg.get("resume_preview_message", "last")).strip().lower()
+        if preview_message not in ("first", "last"):
+            preview_message = "last"
 
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
 
         if action == "list":
-            sessions = db.list_sessions_rich(source=args.source, exclude_sources=_exclude, limit=args.limit)
+            sessions = db.list_sessions_rich(
+                source=args.source,
+                exclude_sources=_exclude,
+                limit=args.limit,
+                preview_message=preview_message,
+            )
             if not sessions:
                 print("No sessions found.")
                 return
@@ -5681,7 +5690,12 @@ Examples:
             limit = getattr(args, "limit", 50) or 50
             source = getattr(args, "source", None)
             _browse_exclude = None if source else ["tool"]
-            sessions = db.list_sessions_rich(source=source, exclude_sources=_browse_exclude, limit=limit)
+            sessions = db.list_sessions_rich(
+                source=source,
+                exclude_sources=_browse_exclude,
+                limit=limit,
+                preview_message=preview_message,
+            )
             db.close()
             if not sessions:
                 print("No sessions found.")
