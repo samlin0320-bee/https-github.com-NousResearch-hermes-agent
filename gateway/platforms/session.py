@@ -298,6 +298,19 @@ class SessionAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Spawn the bridge, wait for it to be ready, then start SSE listener."""
+        
+        # Prevent multiple gateways from using the same Session account.
+        # We use SESSION_BOT_ID (the public Session ID) as the lock identity
+        # because the mnemonic might not be present in all configurations.
+        bot_id = (self.config.extra.get("bot_id") or 
+                 os.getenv("SESSION_BOT_ID") or "unknown")
+        if not self._acquire_platform_lock(
+            scope="session-bot-id",
+            identity=bot_id,
+            resource_desc="Session account (bot ID)"
+        ):
+            return False
+
         # 1. Spawn the bridge process
         try:
             self._bridge_process = self._spawn_bridge()
@@ -444,6 +457,9 @@ class SessionAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._http_client = None
+
+        # Release the scoped lock so another gateway instance can use this mnemonic
+        self._release_platform_lock()
 
         self._mark_disconnected()
         logger.info("Session: disconnected")
