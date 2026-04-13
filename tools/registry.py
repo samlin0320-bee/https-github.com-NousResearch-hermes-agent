@@ -16,7 +16,7 @@ Import chain (circular-import safe):
 
 import json
 import logging
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,19 @@ class ToolEntry:
         "max_result_size_chars",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+    def __init__(
+        self,
+        name: str,
+        toolset: str,
+        schema: dict,
+        handler: Callable,
+        check_fn: Optional[Callable[[], bool]],
+        requires_env: List[str],
+        is_async: bool,
+        description: str,
+        emoji: str,
+        max_result_size_chars: Optional[Union[int, float]] = None,
+    ) -> None:
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -44,13 +54,22 @@ class ToolEntry:
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
 
+    def __repr__(self) -> str:
+        return (
+            f"ToolEntry(name={self.name!r}, toolset={self.toolset!r}, "
+            f"is_async={self.is_async})"
+        )
+
 
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._tools: Dict[str, ToolEntry] = {}
-        self._toolset_checks: Dict[str, Callable] = {}
+        self._toolset_checks: Dict[str, Callable[[], bool]] = {}
+
+    def __repr__(self) -> str:
+        return f"ToolRegistry(tools={len(self._tools)})"
 
     # ------------------------------------------------------------------
     # Registration
@@ -62,13 +81,13 @@ class ToolRegistry:
         toolset: str,
         schema: dict,
         handler: Callable,
-        check_fn: Callable = None,
-        requires_env: list = None,
+        check_fn: Optional[Callable[[], bool]] = None,
+        requires_env: Optional[List[str]] = None,
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
-        max_result_size_chars: int | float | None = None,
-    ):
+        max_result_size_chars: Optional[Union[int, float]] = None,
+    ) -> None:
         """Register a tool.  Called at module-import time by each tool file."""
         existing = self._tools.get(name)
         if existing and existing.toolset != toolset:
@@ -119,21 +138,26 @@ class ToolRegistry:
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
         are included.
         """
-        result = []
-        check_results: Dict[Callable, bool] = {}
+        result: List[dict] = []
+        # Use id(check_fn) as cache key instead of the callable object itself.
+        # This avoids holding strong references to callables that may prevent
+        # garbage collection and avoids potential memory leaks in long-running
+        # gateway processes.
+        check_results: Dict[int, bool] = {}
         for name in sorted(tool_names):
             entry = self._tools.get(name)
             if not entry:
                 continue
-            if entry.check_fn:
-                if entry.check_fn not in check_results:
+            if entry.check_fn is not None:
+                check_id = id(entry.check_fn)
+                if check_id not in check_results:
                     try:
-                        check_results[entry.check_fn] = bool(entry.check_fn())
+                        check_results[check_id] = bool(entry.check_fn())
                     except Exception:
-                        check_results[entry.check_fn] = False
+                        check_results[check_id] = False
                         if not quiet:
                             logger.debug("Tool %s check raised; skipping", name)
-                if not check_results[entry.check_fn]:
+                if not check_results[check_id]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
@@ -146,16 +170,21 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
-    def dispatch(self, name: str, args: dict, **kwargs) -> str:
+    def dispatch(self, name: str, args: dict, **kwargs: Any) -> str:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * The ``error_type`` field distinguishes "unknown_tool" from
+          "execution_error" so callers can handle the two cases differently.
         """
         entry = self._tools.get(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({
+                "error": f"Unknown tool: {name}",
+                "error_type": "unknown_tool",
+            })
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -163,13 +192,17 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            return json.dumps({
+                "error": f"Tool execution failed: {type(e).__name__}: {e}",
+                "error_type": "execution_error",
+                "error_class": type(e).__name__,
+            })
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+    def get_max_result_size(self, name: str, default: Optional[Union[int, float]] = None) -> Union[int, float]:
         """Return per-tool max result size, or *default* (or global default)."""
         entry = self._tools.get(name)
         if entry and entry.max_result_size_chars is not None:
@@ -265,11 +298,11 @@ class ToolRegistry:
                     result[ts]["env_vars"].append(env)
         return result
 
-    def check_tool_availability(self, quiet: bool = False):
+    def check_tool_availability(self, quiet: bool = False) -> tuple:
         """Return (available_toolsets, unavailable_info) like the old function."""
-        available = []
-        unavailable = []
-        seen = set()
+        available: List[str] = []
+        unavailable: List[dict] = []
+        seen: Set[str] = set()
         for entry in self._tools.values():
             ts = entry.toolset
             if ts in seen:
@@ -306,7 +339,7 @@ registry = ToolRegistry()
 #   return tool_result(items)            # pass a dict directly
 
 
-def tool_error(message, **extra) -> str:
+def tool_error(message: str, **extra: Any) -> str:
     """Return a JSON error string for tool handlers.
 
     >>> tool_error("file not found")
@@ -314,13 +347,13 @@ def tool_error(message, **extra) -> str:
     >>> tool_error("bad input", success=False)
     '{"error": "bad input", "success": false}'
     """
-    result = {"error": str(message)}
+    result: Dict[str, Any] = {"error": str(message)}
     if extra:
         result.update(extra)
     return json.dumps(result, ensure_ascii=False)
 
 
-def tool_result(data=None, **kwargs) -> str:
+def tool_result(data: Any = None, **kwargs: Any) -> str:
     """Return a JSON result string for tool handlers.
 
     Accepts a dict positional arg *or* keyword arguments (not both):
