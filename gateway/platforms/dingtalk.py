@@ -67,7 +67,9 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 20000
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
-RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+RECONNECT_BACKOFF_BASE = 5
+RECONNECT_BACKOFF_MAX = 60
+RECONNECT_MAX_RETRIES = 10
 _SESSION_WEBHOOKS_MAX = 500
 _WEBHOOK_TTL_SECONDS = 7200  # 2 hours
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://oapi\.dingtalk\.com/')
@@ -154,6 +156,16 @@ class DingTalkAdapter(BasePlatformAdapter):
         # chat_id → chat_type ("group" or "dm") for proactive API routing
         self._chat_types: Dict[str, str] = {}
 
+        # Text message batching (merge rapid-fire messages)
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._text_batch_delay_seconds: float = float(os.getenv("DINGTALK_TEXT_BATCH_DELAY", "0.6"))
+
+        # Photo batching (merge rapid-fire image sends)
+        self._pending_photo_batches: Dict[str, MessageEvent] = {}
+        self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._photo_batch_delay_seconds: float = float(os.getenv("DINGTALK_PHOTO_BATCH_DELAY", "0.8"))
+
         # Session webhooks: chat_id -> (webhook_url, expiry_time)
         self._session_webhooks: Dict[str, str] = {}
         self._webhook_expiry: Dict[str, float] = {}
@@ -220,17 +232,16 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the stream client with auto-reconnection."""
-        backoff_idx = 0
+        """Run the stream client with exponential backoff reconnection."""
+        retries = 0
         while self._running:
             try:
                 connect_time = time.time()
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
-                # If start() returned without exception, connection ended
-                # Reset backoff if connection was stable for > 2 minutes
+                # Reset retries if connection was stable for > 2 minutes
                 if time.time() - connect_time > 120:
-                    backoff_idx = 0
+                    retries = 0
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -241,10 +252,19 @@ class DingTalkAdapter(BasePlatformAdapter):
             if not self._running:
                 return
 
-            delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
-            logger.info("[%s] Reconnecting in %ds...", self.name, delay)
+            retries += 1
+            if retries > RECONNECT_MAX_RETRIES:
+                msg = (
+                    f"DingTalk stream could not reconnect after {RECONNECT_MAX_RETRIES} "
+                    f"retries. Restarting gateway."
+                )
+                logger.error("[%s] %s", self.name, msg)
+                self._set_fatal_error("dingtalk_network_error", msg, retryable=True)
+                return
+
+            delay = min(RECONNECT_BACKOFF_BASE * (2 ** (retries - 1)), RECONNECT_BACKOFF_MAX)
+            logger.info("[%s] Reconnecting in %ds (attempt %d/%d)...", self.name, delay, retries, RECONNECT_MAX_RETRIES)
             await asyncio.sleep(delay)
-            backoff_idx += 1
 
     async def disconnect(self) -> None:
         """Disconnect from DingTalk."""
@@ -266,6 +286,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._msg_conversations.clear()
         self._chat_senders.clear()
         self._chat_types.clear()
+        for task in self._pending_text_batch_tasks.values():
+            task.cancel()
+        self._pending_text_batches.clear()
+        self._pending_text_batch_tasks.clear()
+        for task in self._pending_photo_batch_tasks.values():
+            task.cancel()
+        self._pending_photo_batches.clear()
+        self._pending_photo_batch_tasks.clear()
 
         self._stream_client = None
         self._session_webhooks.clear()
@@ -558,7 +586,87 @@ class DingTalkAdapter(BasePlatformAdapter):
             "[%s] Message from %s in %s: %s",
             self.name, sender_nick, chat_id[:20] if chat_id else "?", clean_text[:50],
         )
-        await self.handle_message(event)
+        self._enqueue_text_event(event)
+
+    # ------------------------------------------------------------------
+    # Text message batching (merge rapid-fire messages)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Batch key = chat_id (DM: per user, Group: per group)."""
+        return event.source.chat_id or "dm"
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer."""
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        if existing is None:
+            self._pending_text_batches[key] = event
+        elif event.text:
+            existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._text_batch_delay_seconds)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[%s] Flushing text batch %s (%d chars)",
+                self.name, key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Photo batching (merge rapid-fire image sends)
+    # ------------------------------------------------------------------
+
+    def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
+        """Merge photo events into a pending batch and schedule flush."""
+        existing = self._pending_photo_batches.get(batch_key)
+        if existing is None:
+            self._pending_photo_batches[batch_key] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+
+        prior_task = self._pending_photo_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_photo_batch(batch_key)
+        )
+
+    async def _flush_photo_batch(self, batch_key: str) -> None:
+        """Wait for quiet period then dispatch the aggregated photos."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._photo_batch_delay_seconds)
+            event = self._pending_photo_batches.pop(batch_key, None)
+            if not event:
+                return
+            logger.info(
+                "[%s] Flushing photo batch %s with %d image(s)",
+                self.name, batch_key, len(event.media_urls),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_photo_batch_tasks.get(batch_key) is current_task:
+                self._pending_photo_batch_tasks.pop(batch_key, None)
 
     async def _handle_image_message(
         self, message, chat_id, chat_type, sender_id, sender_nick,
@@ -628,7 +736,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
             logger.info("[%s] Cached image from %s at %s", self.name, sender_nick, cached_path)
-            await self.handle_message(event)
+            self._enqueue_photo_event(chat_id, event)
         except Exception as e:
             logger.error("[%s] Image processing error: %s", self.name, e)
         finally:
@@ -945,6 +1053,55 @@ class DingTalkAdapter(BasePlatformAdapter):
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send animated GIF via proactive API (sampleImageMsg) for inline playback."""
+        import tempfile
+        temp_path = None
+        try:
+            # Download GIF if it's a URL
+            local_path = animation_url
+            if animation_url.startswith(("http://", "https://")):
+                if not self._http_client:
+                    return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+                resp = await self._http_client.get(animation_url, timeout=30.0)
+                resp.raise_for_status()
+                suffix = ".gif" if ".gif" in animation_url.lower() else ""
+                fd, temp_path = tempfile.mkstemp(suffix=suffix)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(resp.content)
+                local_path = temp_path
+
+            if not os.path.exists(local_path):
+                return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+
+            media_id = await self._upload_media(local_path, "image")
+            if not media_id:
+                return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+
+            result = await self._send_proactive_media(
+                chat_id, media_id, "sampleImageMsg",
+                extra={"photoURL": media_id},
+            )
+            if result.success and caption:
+                await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+            return result
+        except Exception as e:
+            logger.warning("[%s] send_animation failed, falling back to send_image: %s", self.name, e)
+            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     async def send_voice(
         self,
