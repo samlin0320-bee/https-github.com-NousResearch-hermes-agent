@@ -1873,3 +1873,44 @@ class TestMatrixMessageTypes:
         self.adapter._client = MagicMock()
         result = await self.adapter.send_emote("!room:ex", "")
         assert result.success is False
+
+
+class TestMatrixStopTyping:
+    """Regression tests for Matrix stop_typing (#6016).
+
+    The Matrix adapter previously lacked a stop_typing method, causing the
+    typing indicator to linger for up to 30 seconds after the bot responded.
+    """
+
+    def setup_method(self):
+        with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
+            self.adapter = _make_adapter()
+            self.adapter._client = None
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_sends_false_state(self):
+        """stop_typing should call room_typing with typing_state=False."""
+        mock_client = MagicMock()
+        mock_client.room_typing = AsyncMock()
+        self.adapter._client = mock_client
+
+        await self.adapter.stop_typing("!room:example.com")
+
+        mock_client.room_typing.assert_awaited_once_with(
+            "!room:example.com", typing_state=False, timeout=0
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_no_client(self):
+        """stop_typing should be a no-op when _client is None."""
+        self.adapter._client = None
+        await self.adapter.stop_typing("!room:example.com")  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_exception_suppressed(self):
+        """stop_typing should swallow exceptions from room_typing."""
+        mock_client = MagicMock()
+        mock_client.room_typing = AsyncMock(side_effect=Exception("network error"))
+        self.adapter._client = mock_client
+
+        await self.adapter.stop_typing("!room:example.com")  # should not raise
