@@ -8,8 +8,9 @@ Different LLM providers expect model identifiers in different formats:
   hyphens: ``claude-sonnet-4-6``.
 - **Copilot** expects bare names *with* dots preserved:
   ``claude-sonnet-4.6``.
-- **OpenCode Zen** follows the same dot-to-hyphen convention as
-  Anthropic: ``claude-sonnet-4-6``.
+- **OpenCode Zen** uses provider-native model IDs. Claude models use
+  hyphens like ``claude-sonnet-4-6``; other Zen models preserve dots
+  like ``minimax-m2.5-free``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** only accepts two model identifiers:
   ``deepseek-chat`` and ``deepseek-reasoner``.
@@ -67,7 +68,6 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
 # Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
-    "opencode-zen",
 })
 
 # Providers that want bare names with dots preserved.
@@ -329,6 +329,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("claude-sonnet-4.6", "opencode-zen")
         'claude-sonnet-4-6'
 
+        >>> normalize_model_for_provider("minimax-m2.5-free", "opencode-zen")
+        'minimax-m2.5-free'
+
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
         'deepseek-chat'
 
@@ -351,12 +354,21 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip matching provider prefix, dots -> hyphens ---
+    # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
         return _dots_to_hyphens(bare)
+
+    # --- OpenCode Zen: Claude uses Anthropic-style ids; other models preserve dots ---
+    if provider == "opencode-zen":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        if bare.lower().startswith("claude-"):
+            return _dots_to_hyphens(bare)
+        return bare
 
     # --- Copilot: strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
@@ -388,4 +400,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-
