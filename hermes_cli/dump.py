@@ -299,6 +299,7 @@ def run_dump(args):
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),
         ("KILOCODE_API_KEY", "kilocode"),
+        ("NVIDIA_API_KEY", "nvidia_nim"),
         ("FIRECRAWL_API_KEY", "firecrawl"),
         ("TAVILY_API_KEY", "tavily"),
         ("BROWSERBASE_API_KEY", "browserbase"),

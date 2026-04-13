@@ -949,6 +949,29 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "NVIDIA_API_KEY": {
+        "description": "NVIDIA API key for NIM cloud inference ([build.nvidia.com](https://build.nvidia.com))",
+        "prompt": "NVIDIA API key (NIM)",
+        "url": "https://build.nvidia.com",
+        "password": True,
+        "category": "provider",
+    },
+    "NIM_API_KEY": {
+        "description": "Alias for NVIDIA_API_KEY (some tooling uses NIM_API_KEY)",
+        "prompt": "NIM API key (alias of NVIDIA_API_KEY)",
+        "url": "https://build.nvidia.com",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NVIDIA_BASE_URL": {
+        "description": "NVIDIA NIM base URL override (default: https://integrate.api.nvidia.com/v1)",
+        "prompt": "NVIDIA NIM base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
