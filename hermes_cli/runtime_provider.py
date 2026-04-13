@@ -275,6 +275,36 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             return None
 
     config = load_config()
+
+    # ── New-style providers: dict (config v12+) ───────────────────────────────
+    # Entries live under providers: { key: { api: url, name: ..., transport: ... } }
+    providers_dict = config.get("providers")
+    if isinstance(providers_dict, dict):
+        for key, entry in providers_dict.items():
+            if not isinstance(entry, dict):
+                continue
+            display_name = entry.get("name") or key
+            key_norm = _normalize_custom_provider_name(key)
+            display_norm = _normalize_custom_provider_name(display_name)
+            menu_key = f"custom:{key_norm}"
+            if requested_norm not in {key_norm, display_norm, menu_key}:
+                continue
+            base_url = str(entry.get("api") or entry.get("base_url") or "").strip()
+            if not base_url:
+                continue
+            result = {
+                "name": display_name.strip(),
+                "base_url": base_url,
+                "api_key": str(entry.get("api_key", "") or "").strip(),
+            }
+            # providers dict uses "transport" where custom_providers used "api_mode"
+            raw_mode = entry.get("transport") or entry.get("api_mode")
+            api_mode = _parse_api_mode(raw_mode)
+            if api_mode:
+                result["api_mode"] = api_mode
+            return result
+
+    # ── Legacy custom_providers list (pre-v12) ────────────────────────────────
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
         if isinstance(custom_providers, dict):
