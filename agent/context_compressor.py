@@ -32,13 +32,12 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
-    "into the summary below. This is a handoff from a previous context "
-    "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "[CONTEXT COMPACTION] Earlier turns were compacted into the summary "
+    "below. This is a handoff from a previous context window. Items under "
+    "'Done' or 'Resolved Questions' are already completed — do NOT redo them. "
+    "Items under 'In Progress', 'Remaining Work', or 'Pending User Asks' are "
+    "still active — continue working on them. The current session state "
+    "(files, config, etc.) reflects work described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
