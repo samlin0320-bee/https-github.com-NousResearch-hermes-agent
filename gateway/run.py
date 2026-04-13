@@ -455,6 +455,64 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_custom_provider_context_length(
+    config: dict,
+    *,
+    model: str,
+    provider: str | None = None,
+    base_url: str | None = None,
+) -> int | None:
+    """Return per-model context_length from a matching custom provider entry."""
+    custom_providers = config.get("custom_providers")
+    if not isinstance(custom_providers, list) or not model:
+        return None
+
+    normalized_provider = str(provider or "").strip()
+    normalized_base_url = str(base_url or "").strip().rstrip("/")
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+
+        entry_name = str(entry.get("name") or "").strip()
+        entry_base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        if not (
+            (normalized_provider and entry_name == normalized_provider)
+            or (normalized_base_url and entry_base_url == normalized_base_url)
+        ):
+            continue
+
+        models = entry.get("models") or {}
+        if isinstance(models, dict):
+            model_cfg = models.get(model)
+            if not isinstance(model_cfg, dict):
+                return None
+            raw_ctx = model_cfg.get("context_length")
+            if raw_ctx is None:
+                return None
+            try:
+                return int(raw_ctx)
+            except (TypeError, ValueError):
+                return None
+
+        if isinstance(models, list):
+            for model_cfg in models:
+                if not isinstance(model_cfg, dict) or model_cfg.get("name") != model:
+                    continue
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is None:
+                    return None
+                try:
+                    return int(raw_ctx)
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        return None
+
+    return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -3328,23 +3386,14 @@ class GatewayRunner:
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).
                 # Must run after runtime resolution so _hyg_base_url is set.
-                if _hyg_config_context_length is None and _hyg_base_url:
+                if _hyg_config_context_length is None:
                     try:
-                        _hyg_custom_providers = _hyg_data.get("custom_providers")
-                        if isinstance(_hyg_custom_providers, list):
-                            for _cp in _hyg_custom_providers:
-                                if not isinstance(_cp, dict):
-                                    continue
-                                _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                                if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                    _cp_models = _cp.get("models", {})
-                                    if isinstance(_cp_models, dict):
-                                        _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                        if isinstance(_cp_model_cfg, dict):
-                                            _cp_ctx = _cp_model_cfg.get("context_length")
-                                            if _cp_ctx is not None:
-                                                _hyg_config_context_length = int(_cp_ctx)
-                                    break
+                        _hyg_config_context_length = _resolve_custom_provider_context_length(
+                            _hyg_data,
+                            model=_hyg_model,
+                            provider=_hyg_provider,
+                            base_url=_hyg_base_url,
+                        )
                     except (TypeError, ValueError):
                         pass
             except Exception:
@@ -3861,6 +3910,7 @@ class GatewayRunner:
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
+        data = {}
         config_context_length = None
         provider = None
         base_url = None
@@ -3893,6 +3943,17 @@ class GatewayRunner:
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is None:
+            try:
+                config_context_length = _resolve_custom_provider_context_length(
+                    data,
+                    model=model,
+                    provider=provider,
+                    base_url=base_url,
+                )
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,

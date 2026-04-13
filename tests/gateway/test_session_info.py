@@ -61,6 +61,46 @@ class TestFormatSessionInfo:
         assert "128K" in info
         assert "model.context_length" in info
 
+    def test_custom_provider_list_context_length(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n"
+            "  default: my-huge-model\n"
+            "  provider: my-custom\n"
+            "custom_providers:\n"
+            "  - name: my-custom\n"
+            "    base_url: https://my-gateway.io/v1\n"
+            "    models:\n"
+            "      - name: my-huge-model\n"
+            "        context_length: 1100000\n",
+            "my-huge-model",
+            {"provider": "my-custom", "base_url": "https://my-gateway.io/v1", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.1M" in info
+        assert "config" in info
+
+    def test_custom_provider_dict_context_length(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n"
+            "  default: my-huge-model\n"
+            "  provider: my-custom\n"
+            "custom_providers:\n"
+            "  - name: my-custom\n"
+            "    base_url: https://my-gateway.io/v1\n"
+            "    models:\n"
+            "      my-huge-model:\n"
+            "        context_length: 1100000\n",
+            "my-huge-model",
+            {"provider": "my-custom", "base_url": "https://my-gateway.io/v1", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.1M" in info
+        assert "config" in info
+
     def test_local_endpoint_shown(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(
             tmp_path,
