@@ -1054,6 +1054,8 @@ def select_provider_and_model(args=None):
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
         "xiaomi": "Xiaomi MiMo",
+        "volcengine": "Volcengine",
+        "byteplus": "BytePlus",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -1069,6 +1071,8 @@ def select_provider_and_model(args=None):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("openai-codex", "OpenAI Codex"),
+        ("volcengine", "Volcengine"),
+        ("byteplus", "BytePlus"),
         ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
@@ -1199,6 +1203,8 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider in ("volcengine", "byteplus"):
+        _model_flow_contract_provider(config, selected_provider, current_model)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1239,7 +1245,7 @@ def _clear_stale_openai_base_url():
               else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})")
 
 
-def _prompt_provider_choice(choices, *, default=0):
+def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
@@ -1248,7 +1254,7 @@ def _prompt_provider_choice(choices, *, default=0):
     """
     try:
         from hermes_cli.setup import _curses_prompt_choice
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
@@ -1256,7 +1262,7 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -1974,6 +1980,10 @@ def _model_flow_named_custom(config, provider_info):
 
 # Curated model lists for direct API-key providers — single source in models.py
 from hermes_cli.models import _PROVIDER_MODELS
+from hermes_cli.provider_contracts import (
+    base_url_for_provider_model,
+    provider_models,
+)
 
 
 def _current_reasoning_effort(config) -> str:
@@ -2575,6 +2585,70 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"Default model set to: {selected} (via {pconfig.name})")
     else:
         print("No change.")
+
+
+def _model_flow_contract_provider(config, provider_id, current_model=""):
+    """Provider flow for Volcengine / BytePlus contract-backed catalogs."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    existing_key = ""
+    for env_var in pconfig.api_key_env_vars:
+        existing_key = get_env_value(env_var) or os.getenv(env_var, "")
+        if existing_key:
+            break
+
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if key_env:
+            try:
+                import getpass
+
+                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("Cancelled.")
+                return
+            save_env_value(key_env, new_key)
+            print("API key saved.")
+            print()
+    else:
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+
+    model_list = provider_models(provider_id)
+    if not model_list:
+        print(f"No curated model catalog found for {pconfig.name}.")
+        return
+
+    selected = _prompt_model_selection(model_list, current_model=current_model)
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = base_url_for_provider_model(provider_id, selected)
+    model.pop("api_mode", None)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
 def _run_anthropic_oauth_flow(save_env_value):

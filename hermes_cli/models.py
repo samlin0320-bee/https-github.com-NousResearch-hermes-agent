@@ -14,6 +14,12 @@ import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
 
+from hermes_cli.provider_contracts import (
+    BYTEPLUS_PROVIDER,
+    VOLCENGINE_PROVIDER,
+    provider_models,
+)
+
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
@@ -287,6 +293,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    VOLCENGINE_PROVIDER: provider_models(VOLCENGINE_PROVIDER),
+    BYTEPLUS_PROVIDER: provider_models(BYTEPLUS_PROVIDER),
 }
 
 # ---------------------------------------------------------------------------
@@ -500,6 +508,8 @@ _PROVIDER_LABELS = {
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
     "xiaomi": "Xiaomi MiMo",
+    VOLCENGINE_PROVIDER: "Volcengine",
+    BYTEPLUS_PROVIDER: "BytePlus",
     "custom": "Custom endpoint",
 }
 
@@ -544,6 +554,10 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "volcengine-coding-plan": VOLCENGINE_PROVIDER,
+    "volcengine_coding_plan": VOLCENGINE_PROVIDER,
+    "byteplus-coding-plan": BYTEPLUS_PROVIDER,
+    "byteplus_coding_plan": BYTEPLUS_PROVIDER,
 }
 
 
@@ -842,6 +856,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "volcengine", "byteplus",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
@@ -861,7 +876,7 @@ def list_available_providers() -> list[dict[str, str]]:
             from hermes_cli.auth import get_auth_status, has_usable_secret
             if pid == "custom":
                 custom_base_url = _get_custom_base_url() or ""
-                has_creds = bool(custom_base_url.strip())
+                has_creds = bool(custom_base_url.strip()) and provider_for_base_url(custom_base_url) is None
             elif pid == "openrouter":
                 has_creds = has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
             else:
@@ -925,6 +940,44 @@ def _get_custom_base_url() -> str:
     except Exception:
         pass
     return ""
+
+
+def provider_for_base_url(base_url: str) -> Optional[str]:
+    """Return a known built-in provider for a configured base URL, if any."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized or "openrouter.ai" in normalized.lower():
+        return None
+
+    url_lower = normalized.lower()
+    host_to_provider = {
+        "ark.cn-beijing.volces.com": VOLCENGINE_PROVIDER,
+        "ark.ap-southeast.bytepluses.com": BYTEPLUS_PROVIDER,
+        "api.z.ai": "zai",
+        "api.moonshot.ai": "kimi-coding",
+        "api.kimi.com": "kimi-coding",
+        "api.minimax.io": "minimax",
+        "api.minimaxi.com": "minimax-cn",
+        "dashscope.aliyuncs.com": "alibaba",
+        "dashscope-intl.aliyuncs.com": "alibaba",
+        "portal.qwen.ai": "qwen-oauth",
+        "router.huggingface.co": "huggingface",
+        "generativelanguage.googleapis.com": "gemini",
+        "api.deepseek.com": "deepseek",
+        "api.githubcopilot.com": "copilot",
+        "models.github.ai": "copilot",
+        "opencode.ai": "opencode-go",
+        "api.x.ai": "xai",
+        "api.xiaomimimo.com": "xiaomi",
+        "xiaomimimo.com": "xiaomi",
+        "api.anthropic.com": "anthropic",
+        "inference-api.nousresearch.com": "nous",
+    }
+    for host, provider_id in host_to_provider.items():
+        if host in url_lower:
+            canonical = normalize_provider(provider_id)
+            if canonical in _PROVIDER_LABELS and canonical != "custom":
+                return canonical
+    return None
 
 
 def curated_models_for_provider(

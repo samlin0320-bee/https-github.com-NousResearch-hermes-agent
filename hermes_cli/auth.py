@@ -38,6 +38,13 @@ import httpx
 import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
+from hermes_cli.provider_contracts import (
+    VOLCENGINE_PROVIDER,
+    BYTEPLUS_PROVIDER,
+    VOLCENGINE_STANDARD_BASE_URL,
+    BYTEPLUS_STANDARD_BASE_URL,
+    base_url_for_provider_model,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -257,6 +264,20 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
+    ),
+    "volcengine": ProviderConfig(
+        id=VOLCENGINE_PROVIDER,
+        name="Volcengine",
+        auth_type="api_key",
+        inference_base_url=VOLCENGINE_STANDARD_BASE_URL,
+        api_key_env_vars=("VOLCENGINE_API_KEY",),
+    ),
+    "byteplus": ProviderConfig(
+        id=BYTEPLUS_PROVIDER,
+        name="BytePlus",
+        auth_type="api_key",
+        inference_base_url=BYTEPLUS_STANDARD_BASE_URL,
+        api_key_env_vars=("BYTEPLUS_API_KEY",),
     ),
 }
 
@@ -939,6 +960,10 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "volcengine-coding-plan": "volcengine",
+        "volcengine_coding_plan": "volcengine",
+        "byteplus-coding-plan": "byteplus",
+        "byteplus_coding_plan": "byteplus",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
@@ -1069,6 +1094,21 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
 
 def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
+
+
+def _current_model_for_provider(provider_id: str) -> str:
+    """Return the currently configured model when it belongs to the provider."""
+    try:
+        config = read_raw_config()
+    except Exception:
+        return ""
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        if configured_provider == provider_id:
+            return str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+    return ""
 
 
 def _read_qwen_cli_tokens() -> Dict[str, Any]:
@@ -2366,7 +2406,11 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    active_model = _current_model_for_provider(provider_id)
+
+    if provider_id in {VOLCENGINE_PROVIDER, BYTEPLUS_PROVIDER}:
+        base_url = base_url_for_provider_model(provider_id, active_model) or pconfig.inference_base_url
+    elif provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -2452,7 +2496,11 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    active_model = _current_model_for_provider(provider_id)
+
+    if provider_id in {VOLCENGINE_PROVIDER, BYTEPLUS_PROVIDER}:
+        base_url = base_url_for_provider_model(provider_id, active_model) or pconfig.inference_base_url
+    elif provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)

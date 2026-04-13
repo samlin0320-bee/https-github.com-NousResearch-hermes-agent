@@ -93,6 +93,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "volcengine",
+    "byteplus",
     "custom",
 })
 
@@ -400,4 +402,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-
