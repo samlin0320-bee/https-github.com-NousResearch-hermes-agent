@@ -304,6 +304,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by
