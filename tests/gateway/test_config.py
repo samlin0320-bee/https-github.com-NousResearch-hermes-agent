@@ -137,6 +137,26 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_get_notice_delivery_defaults_to_public(self):
+        config = GatewayConfig(
+            platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}
+        )
+
+        assert config.get_notice_delivery(Platform.SLACK) == "public"
+
+    def test_get_notice_delivery_honors_platform_override(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    extra={"notice_delivery": "private"},
+                ),
+            }
+        )
+
+        assert config.get_notice_delivery(Platform.SLACK) == "private"
+
 
 class TestLoadGatewayConfig:
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
@@ -222,6 +242,22 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_bridges_notice_delivery_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  notice_delivery: private\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.get_notice_delivery(Platform.SLACK) == "private"
 
 
 class TestHomeChannelEnvOverrides:
