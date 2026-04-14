@@ -2,7 +2,7 @@
 
 import json
 
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, ToolEntry, tool_error, tool_result
 
 
 def _dummy_handler(args, **kwargs):
@@ -116,6 +116,12 @@ class TestUnknownToolDispatch:
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
+    def test_unknown_tool_has_error_type(self):
+        """Dispatching an unknown tool returns structured error with error_type."""
+        reg = ToolRegistry()
+        result = json.loads(reg.dispatch("nonexistent", {}))
+        assert result.get("error_type") == "unknown_tool"
+
 
 class TestToolsetAvailability:
     def test_no_check_fn_is_available(self):
@@ -179,6 +185,21 @@ class TestToolsetAvailability:
         result = json.loads(reg.dispatch("bad", {}))
         assert "error" in result
         assert "RuntimeError" in result["error"]
+
+    def test_execution_error_has_structured_fields(self):
+        """Dispatch errors include error_type and error_class."""
+        reg = ToolRegistry()
+
+        def bad_handler(args, **kw):
+            raise ValueError("invalid input")
+
+        reg.register(
+            name="bad", toolset="s", schema=_make_schema(), handler=bad_handler
+        )
+        result = json.loads(reg.dispatch("bad", {}))
+        assert result.get("error_type") == "execution_error"
+        assert result.get("error_class") == "ValueError"
+        assert "invalid input" in result["error"]
 
 
 class TestCheckFnExceptionHandling:
@@ -301,6 +322,62 @@ class TestEmojiMetadata:
         assert reg.get_emoji("t") == "⚡"
 
 
+class TestToolEntryRepr:
+    """Verify ToolEntry.__repr__ produces useful debug output."""
+
+    def test_repr_contains_name_and_toolset(self):
+        entry = ToolEntry(
+            name="my_tool", toolset="core", schema=_make_schema("my_tool"),
+            handler=_dummy_handler, check_fn=None, requires_env=[],
+            is_async=False, description="A test tool", emoji="🔧",
+        )
+        r = repr(entry)
+        assert "my_tool" in r
+        assert "core" in r
+        assert "is_async=False" in r
+
+    def test_repr_shows_async_true(self):
+        entry = ToolEntry(
+            name="async_tool", toolset="web", schema=_make_schema("async_tool"),
+            handler=_dummy_handler, check_fn=None, requires_env=[],
+            is_async=True, description="", emoji="",
+        )
+        assert "is_async=True" in repr(entry)
+
+
+class TestToolRegistryRepr:
+    """Verify ToolRegistry.__repr__ shows tool count."""
+
+    def test_repr_shows_zero(self):
+        reg = ToolRegistry()
+        assert "0" in repr(reg)
+
+    def test_repr_shows_count(self):
+        reg = ToolRegistry()
+        reg.register(name="a", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        reg.register(name="b", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        assert "2" in repr(reg)
+
+
+class TestCheckFnCacheUsesId:
+    """Verify get_definitions caches by id(check_fn) not the callable itself."""
+
+    def test_different_functions_with_same_logic_are_cached_separately(self):
+        """Two different lambda functions should each be evaluated."""
+        reg = ToolRegistry()
+        reg.register(
+            name="t1", toolset="s1", schema=_make_schema("t1"),
+            handler=_dummy_handler, check_fn=lambda: True,
+        )
+        reg.register(
+            name="t2", toolset="s2", schema=_make_schema("t2"),
+            handler=_dummy_handler, check_fn=lambda: True,
+        )
+        # Both should be returned (different check_fns)
+        defs = reg.get_definitions({"t1", "t2"})
+        assert len(defs) == 2
+
+
 class TestSecretCaptureResultContract:
     def test_secret_request_result_does_not_include_secret_value(self):
         result = {
@@ -309,3 +386,28 @@ class TestSecretCaptureResultContract:
             "validated": False,
         }
         assert "secret" not in json.dumps(result).lower()
+
+
+class TestToolErrorHelper:
+    """Verify tool_error() helper function."""
+
+    def test_basic_error(self):
+        result = json.loads(tool_error("file not found"))
+        assert result == {"error": "file not found"}
+
+    def test_error_with_extra_fields(self):
+        result = json.loads(tool_error("bad input", success=False))
+        assert result["error"] == "bad input"
+        assert result["success"] is False
+
+
+class TestToolResultHelper:
+    """Verify tool_result() helper function."""
+
+    def test_result_from_kwargs(self):
+        result = json.loads(tool_result(success=True, count=42))
+        assert result == {"success": True, "count": 42}
+
+    def test_result_from_dict(self):
+        result = json.loads(tool_result({"key": "value"}))
+        assert result == {"key": "value"}
