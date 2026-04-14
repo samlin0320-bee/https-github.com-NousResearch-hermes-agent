@@ -21,7 +21,7 @@ Apple/macOS-specific skills — iMessage, Reminders, Notes, FindMy, and macOS au
 
 ## autonomous-ai-agents
 
-Skills for spawning and orchestrating autonomous AI coding agents and multi-agent workflows — running independent agent processes, delegating tasks, and coordinating parallel workstreams.
+Skills for spawning, orchestrating, and hiring autonomous AI agents and multi-agent workflows — running independent agent processes, delegating tasks, coordinating parallel workstreams, or using external agent platforms.
 
 | Skill | Description | Path |
 |-------|-------------|------|
@@ -29,6 +29,7 @@ Skills for spawning and orchestrating autonomous AI coding agents and multi-agen
 | `codex` | Delegate coding tasks to OpenAI Codex CLI agent. Use for building features, refactoring, PR reviews, and batch issue fixing. Requires the codex CLI and a git repository. | `autonomous-ai-agents/codex` |
 | `hermes-agent-spawning` | Spawn additional Hermes Agent instances as autonomous subprocesses for independent long-running tasks. Supports non-interactive one-shot mode (-q) and interactive PTY mode for multi-turn collaboration. Different from delegate_task — this runs a full separate hermes process. | `autonomous-ai-agents/hermes-agent` |
 | `opencode` | Delegate coding tasks to OpenCode CLI agent for feature implementation, refactoring, PR review, and long-running autonomous sessions. Requires the opencode CLI installed and authenticated. | `autonomous-ai-agents/opencode` |
+| `sokosumi` | Use Sokosumi with API-key auth, direct agent hires, coworker tasks, job monitoring, and result retrieval from non-interactive agent environments. | `autonomous-ai-agents/sokosumi` |
 
 ## data-science
 
