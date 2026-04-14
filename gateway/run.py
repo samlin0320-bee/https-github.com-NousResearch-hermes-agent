@@ -7815,6 +7815,13 @@ class GatewayRunner:
                         # such platforms so streaming still delivers the final
                         # response, just without the typing indicator.
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        
+                        # Disable progressive stream deltas if the adapter cannot edit them,
+                        # otherwise it results in a small first chunk sent followed by
+                        # the remaining continuation sent as a second message.
+                        if not _adapter_supports_edit:
+                            _want_stream_deltas = False
+
                         _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
