@@ -79,6 +79,7 @@ _DINGTALK_API_HOST = "api.dingtalk.com"
 _CARD_TEMPLATE_ID = "51cd8c7e-0e7e-4464-a795-5b81499ada7a.schema"
 _CARD_CONTENT_KEY = "content"
 _CARD_DEGRADE_DEFAULT_MS = 30 * 60 * 1000  # 30 min
+_SENT_CARD_TTL = 7200  # 2 hours to track card outTrackIds for edit_message
 
 # Stop commands
 STOP_COMMANDS = {"stop", "/stop", "esc", "quit", "exit", "cancel", "取消", "停止"}
@@ -180,6 +181,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._ai_card_degrade_ms: int = extra.get("ai_card_degrade_ms", _CARD_DEGRADE_DEFAULT_MS)
         self._ai_card_degrade_until: float = 0  # timestamp to retry AI Card after degrade
         self._ai_card_instances: Dict[str, Dict[str, Any]] = {}  # chat_id -> card state
+        # Track sent card outTrackIds for edit_message lookup (outTrackId -> (chat_id, expire))
+        self._sent_card_tracks: Dict[str, Tuple[str, float]] = {}
 
         # @mention patterns
         self._mention_pattern = re.compile(
@@ -300,6 +303,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._webhook_expiry.clear()
         self._seen_messages.clear()
         self._ai_card_instances.clear()
+        self._sent_card_tracks.clear()
         logger.info("[%s] Disconnected", self.name)
 
     # ================================================================
@@ -557,6 +561,13 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         # Clean @mentions from text
         clean_text = self._clean_bot_trigger_text(text)
+
+        # Approval keyword mapping (Chinese → English command for gateway routing)
+        _clean_lower = clean_text.strip().lower()
+        if _clean_lower in ("批准", "/批准"):
+            clean_text = "/approve"
+        elif _clean_lower in ("拒绝", "/拒绝"):
+            clean_text = "/deny"
 
         # Extract quoted reply context
         reply_to_text = self._extract_quoted_text(message)
@@ -970,7 +981,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Send a markdown reply via DingTalk session webhook."""
         metadata = metadata or {}
 
-        # Check if AI Card should be used
+        # If an active AI Card exists for this chat, stream to it and finalize
+        if self._ai_card_enabled and chat_id in self._ai_card_instances:
+            ok = await self.ai_card_stream_update(chat_id, content, is_final=True)
+            if ok:
+                return SendResult(success=True, message_id="")
+
+        # Check if AI Card should be used (explicit opt-in)
         if self._ai_card_enabled and metadata.get("use_ai_card", False):
             if time.time() > self._ai_card_degrade_until:
                 result = await self._send_via_ai_card(chat_id, content, metadata)
@@ -1297,7 +1314,55 @@ class DingTalkAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """DingTalk does not support editing — send new message with edit indicator."""
+        """Edit a previously sent message.
+
+        AI Cards can be updated in-place via streaming API (active) or
+        updateCardVariables (finalized). Regular markdown messages fall back
+        to sending a new message with edit indicator.
+        """
+        # Try AI Card edit if message_id is a tracked outTrackId
+        track_info = self._sent_card_tracks.get(message_id)
+        if track_info:
+            target_chat_id, expire = track_info
+            if time.time() > expire:
+                self._sent_card_tracks.pop(message_id, None)
+            else:
+                # Check if card is still streaming (active)
+                card_info = self._ai_card_instances.get(target_chat_id)
+                if card_info and card_info["out_track_id"] == message_id:
+                    # Active card — use streaming API
+                    ok = await self.ai_card_stream_update(target_chat_id, content, is_final=True)
+                    if ok:
+                        return SendResult(success=True, message_id=message_id)
+                # Finalized card — use updateCardVariables API
+                if self._http_client and await self._refresh_access_token():
+                    try:
+                        url = f"https://{_DINGTALK_API_HOST}/v1.0/card/instances"
+                        resp = await self._http_client.put(
+                            url,
+                            headers={
+                                "x-acs-dingtalk-access-token": self._access_token or "",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "outTrackId": message_id,
+                                "cardData": {
+                                    "cardParamMap": {"markdownTextiA9sAH": content[:self.MAX_MESSAGE_LENGTH]},
+                                },
+                                "cardUpdateOptions": {"updateCardDataByKey": True},
+                            },
+                            timeout=10.0,
+                        )
+                        if resp.status_code < 300:
+                            return SendResult(success=True, message_id=message_id)
+                        logger.debug(
+                            "[%s] updateCardVariables failed HTTP %d, falling back",
+                            self.name, resp.status_code,
+                        )
+                    except Exception as e:
+                        logger.debug("[%s] updateCardVariables error: %s, falling back", self.name, e)
+
+        # Fallback: send new message with edit marker
         content = f"*(编辑)*\n\n{content}"
         return await self.send(chat_id, content)
 
@@ -1312,52 +1377,108 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def _send_via_ai_card(
         self, chat_id: str, content: str, metadata: Dict[str, Any],
     ) -> SendResult:
-        """Send message as an AI Card with streaming updates."""
+        """Send message as an AI Card via createAndDeliver API."""
         if not self._http_client or not await self._refresh_access_token():
             return SendResult(success=False, error="No HTTP client or token")
 
-        session_webhook = metadata.get("session_webhook") or self._get_webhook(chat_id)
-        if not session_webhook:
-            return SendResult(success=False, error="No session_webhook for AI Card")
-
         try:
-            out_track_id = uuid.uuid4().hex
+            card_instance_id = f"card_{uuid.uuid4().hex}"
+            is_group = self._chat_types.get(chat_id) == "group"
 
-            # Create card via createAndDeliver API
-            create_url = f"https://{_DINGTALK_API_HOST}/v1.0/robot/cards"
-            create_resp = await self._http_client.post(
+            # For DM, openSpaceId needs userId, not cid-prefixed conversationId
+            # (matching TS plugin: const to = isDirect ? senderId : groupId)
+            if is_group:
+                space_id = chat_id
+            else:
+                space_id = self._chat_senders.get(chat_id, chat_id)
+
+            # Build createAndDeliver payload (matching TS plugin)
+            body: Dict[str, Any] = {
+                "cardTemplateId": _CARD_TEMPLATE_ID,
+                "outTrackId": card_instance_id,
+                "cardData": {
+                    "cardParamMap": {
+                        "config": '{"autoLayout":true,"enableForward":true}',
+                        _CARD_CONTENT_KEY: content or "",
+                        "stop_action": "true",
+                    },
+                },
+                "callbackType": "STREAM",
+                "imGroupOpenSpaceModel": {"supportForward": True},
+                "imRobotOpenSpaceModel": {"supportForward": True},
+                "openSpaceId": (
+                    f"dtv1.card//IM_GROUP.{space_id}" if is_group
+                    else f"dtv1.card//IM_ROBOT.{space_id}"
+                ),
+                "userIdType": 1,
+            }
+            if is_group:
+                body["imGroupOpenDeliverModel"] = {
+                    "robotCode": self._client_id,
+                    "extension": {"dynamicSummary": "true"},
+                }
+            else:
+                body["imRobotOpenDeliverModel"] = {
+                    "spaceType": "IM_ROBOT",
+                    "robotCode": self._client_id,
+                    "extension": {"dynamicSummary": "true"},
+                }
+
+            create_url = f"https://{_DINGTALK_API_HOST}/v1.0/card/instances/createAndDeliver"
+            resp = await self._http_client.post(
                 create_url,
                 headers={
                     "x-acs-dingtalk-access-token": self._access_token or "",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "cardTemplateId": _CARD_TEMPLATE_ID,
-                    "outTrackId": out_track_id,
-                    "cardData": {
-                        "cardParamMap": {
-                            "config": '{"autoLayout":true,"enableForward":true}',
-                            _CARD_CONTENT_KEY: "",
-                            "stop_action": "true",
-                        },
-                    },
-                    "callbackType": "STREAM",
-                },
+                json=body,
                 timeout=15.0,
             )
 
-            create_data = create_resp.json()
-            if create_resp.status_code >= 300:
-                logger.warning("[%s] AI Card create failed: %s", self.name, create_data)
-                return SendResult(success=False, error=f"Card create failed: {create_data}")
+            resp_body = resp.text[:500] if resp.text else ""
+            if resp.status_code >= 300:
+                logger.warning("[%s] AI Card create failed: HTTP %d %s", self.name, resp.status_code, resp_body)
+                return SendResult(success=False, error=f"Card create failed: {resp.status_code}")
+
+            # Check errcode and deliverResults in response
+            try:
+                resp_json = resp.json() if resp.text else {}
+                errcode = resp_json.get("errcode", 0)
+                if errcode != 0:
+                    logger.warning("[%s] AI Card create errcode=%d errmsg=%s", self.name, errcode, resp_json.get("errmsg", ""))
+                    return SendResult(success=False, error=f"Card create errcode: {errcode}")
+                # Check deliverResults for per-delivery errors
+                result = resp_json.get("result", {})
+                deliver_results = result.get("deliverResults", [])
+                for dr in deliver_results:
+                    if not dr.get("success", True):
+                        err_msg = dr.get("errorMsg", "unknown")
+                        logger.warning(
+                            "[%s] AI Card deliver failed: spaceType=%s spaceId=%s error=%s",
+                            self.name, dr.get("spaceType"), dr.get("spaceId", "")[:30], err_msg,
+                        )
+                        return SendResult(success=False, error=f"Card deliver failed: {err_msg}")
+                # Use API-returned outTrackId if available
+                api_out_track_id = result.get("outTrackId") or resp_json.get("outTrackId")
+                if api_out_track_id and isinstance(api_out_track_id, str) and api_out_track_id.strip():
+                    card_instance_id = api_out_track_id.strip()
+                logger.info("[%s] AI Card created: track=%s resp=%s", self.name, card_instance_id[:20], resp_body[:200])
+            except Exception:
+                logger.info("[%s] AI Card created: track=%s (no JSON body)", self.name, card_instance_id[:20])
 
             # Store card instance
             self._ai_card_instances[chat_id] = {
-                "out_track_id": out_track_id,
+                "out_track_id": card_instance_id,
                 "created_at": time.time(),
             }
+            # Track outTrackId for edit_message lookup
+            self._sent_card_tracks[card_instance_id] = (chat_id, time.time() + _SENT_CARD_TTL)
 
-            return SendResult(success=True, message_id=out_track_id)
+            # Kick card into streaming mode (transition from PROCESSING → INPUTING)
+            # This sends an empty content stream so the UI shows "输出中" immediately
+            await self.ai_card_stream_update(chat_id, "", is_final=False)
+
+            return SendResult(success=True, message_id=card_instance_id)
 
         except Exception as e:
             logger.error("[%s] AI Card error: %s", self.name, e)
@@ -1367,9 +1488,16 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Stream content update to an active AI Card via PUT /v1.0/card/streaming."""
         card_info = self._ai_card_instances.get(chat_id)
         if not card_info or not self._http_client:
+            logger.warning("[%s] AI Card stream: no card info or HTTP client for %s", self.name, chat_id[:20])
+            return False
+
+        # Refresh token before API call (token may expire during long processing)
+        if not await self._refresh_access_token():
+            logger.warning("[%s] AI Card stream: token refresh failed", self.name)
             return False
 
         out_track_id = card_info["out_track_id"]
+        content_len = len(content)
         try:
             stream_url = f"https://{_DINGTALK_API_HOST}/v1.0/card/streaming"
             resp = await self._http_client.put(
@@ -1380,19 +1508,41 @@ class DingTalkAdapter(BasePlatformAdapter):
                 },
                 json={
                     "outTrackId": out_track_id,
-                    "guid": uuid.uuid4().hex,
+                    "guid": str(uuid.uuid4()),
                     "key": _CARD_CONTENT_KEY,
                     "content": content[:self.MAX_MESSAGE_LENGTH],
                     "isFull": True,
                     "isFinalize": is_final,
                     "isError": False,
                 },
-                timeout=10.0,
+                timeout=30.0,
             )
 
+            resp_body = resp.text[:500] if resp.text else ""
             if resp.status_code >= 300:
-                logger.warning("[%s] AI Card stream update failed: HTTP %d", self.name, resp.status_code)
+                logger.warning(
+                    "[%s] AI Card stream failed: HTTP %d body=%s",
+                    self.name, resp.status_code, resp_body,
+                )
                 return False
+
+            # Check DingTalk errcode in response body
+            try:
+                resp_json = resp.json() if resp.text else {}
+                errcode = resp_json.get("errcode", 0)
+                if errcode != 0:
+                    logger.warning(
+                        "[%s] AI Card stream errcode=%d errmsg=%s",
+                        self.name, errcode, resp_json.get("errmsg", ""),
+                    )
+                    return False
+            except Exception:
+                pass
+
+            logger.info(
+                "[%s] AI Card stream OK: %d chars, final=%s, track=%s",
+                self.name, content_len, is_final, out_track_id[:20],
+            )
 
             if is_final:
                 self._ai_card_instances.pop(chat_id, None)
@@ -1448,35 +1598,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send command execution approval via ActionCard."""
+        """Send command execution approval via text keywords (ActionCard buttons not supported on DingTalk)."""
         metadata = metadata or {}
         cmd_preview = command[:800] + "..." if len(command) > 800 else command
 
         content = (
-            f"⚠️ **Command Approval Required**\n\n"
+            f"⚠️ **需要授权执行命令**\n\n"
             f"```\n{cmd_preview}\n```\n\n"
-            f"Reason: {description}"
+            f"原因: {description}\n\n"
+            f"请回复以下关键词：\n"
+            f"- `批准` 或 `/approve` — 允许一次\n"
+            f"- `/approve all` — 允许所有待执行命令\n"
+            f"- `拒绝` 或 `/deny` — 拒绝执行"
         )
-
-        action_card = {
-            "title": "⚠️ Command Approval",
-            "btn_orientation": "1",
-            "btns": [
-                {
-                    "title": "✅ Allow Once",
-                    "actionURL": f"hermes://exec/{session_key}/approve/once",
-                },
-                {
-                    "title": "✅ Session",
-                    "actionURL": f"hermes://exec/{session_key}/approve/session",
-                },
-                {
-                    "title": "❌ Deny",
-                    "actionURL": f"hermes://exec/{session_key}/deny",
-                },
-            ],
-        }
-        metadata["action_card"] = action_card
         return await self.send(chat_id, content, metadata=metadata)
 
     async def send_model_picker(
@@ -1561,7 +1695,14 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Attach thinking reaction when processing begins."""
+        """Attach thinking reaction and create AI Card when processing begins."""
+        # Create AI Card if enabled (for streaming updates during processing)
+        chat_id = event.source.chat_id
+        if self._ai_card_enabled and chat_id not in self._ai_card_instances:
+            result = await self._send_via_ai_card(chat_id, "", {})
+            if result.success:
+                logger.info("[%s] AI Card created for %s", self.name, chat_id[:20])
+
         if not self._reactions_enabled():
             return
         msg_id = getattr(event, "message_id", None)
@@ -1575,6 +1716,9 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap thinking reaction for completion emotion."""
+        # Note: AI Card is finalized by the last send() call, not here,
+        # to avoid overwriting content with empty is_final update.
+
         if not self._reactions_enabled():
             return
         msg_id = getattr(event, "message_id", None)
