@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re as _re
 import shutil
 import sys
 import json
@@ -565,6 +566,7 @@ except Exception:
 
 from rich import box as rich_box
 from rich.console import Console
+from rich.markdown import Markdown as _RichMarkdown
 from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
@@ -1059,6 +1061,28 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
     return _RichText.from_ansi(text or "")
+
+
+_MD_PATTERNS = (
+    _re.compile(r"^\|.*\|.*\|", _re.MULTILINE),          # markdown table row
+    _re.compile(r"^#{1,6}\s+\S", _re.MULTILINE),         # heading
+    _re.compile(r"^```", _re.MULTILINE),                  # fenced code block
+    _re.compile(r"^\s*[-*]\s+\S", _re.MULTILINE),         # unordered list
+    _re.compile(r"^\s*\d+\.\s+\S", _re.MULTILINE),       # ordered list
+)
+
+
+def _looks_like_markdown(text: str) -> bool:
+    """Return True if *text* contains at least two markdown indicators."""
+    hits = sum(1 for p in _MD_PATTERNS if p.search(text))
+    return hits >= 2
+
+
+def _render_response_content(text: str):
+    """Return a Rich renderable: Markdown if the text looks like it, else ANSI."""
+    if _looks_like_markdown(text):
+        return _RichMarkdown(text)
+    return _rich_text_from_ansi(text)
 
 
 def _cprint(text: str):
@@ -5755,7 +5779,7 @@ class HermesCLI:
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_response_content(response),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -5880,7 +5904,7 @@ class HermesCLI:
                         _resp_color = "#4F6D4A"
 
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_response_content(response),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -7873,7 +7897,7 @@ class HermesCLI:
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_response_content(response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
