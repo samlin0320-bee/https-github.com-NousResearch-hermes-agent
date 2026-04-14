@@ -6716,6 +6716,37 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    @staticmethod
+    def _inject_mid_task_resume(messages: list, was_mid_task: bool) -> None:
+        """Inject a resume signal after mid-task context compaction.
+
+        When compression fires while the agent is actively executing tools
+        (detected by the last pre-compression message having role "tool"),
+        append a synthetic user message that tells the model to continue
+        rather than stopping to summarize or asking the user.
+
+        Avoids consecutive same-role messages: if the last message in the
+        compressed output is already role "user" (e.g. a todo_snapshot),
+        the resume text is merged into that message instead of appended.
+        """
+        if not was_mid_task:
+            return
+        _resume_text = (
+            "[SYSTEM: Context was auto-compacted while you were "
+            "actively executing a multi-step task with tools. "
+            "Review the summary and any remaining context above, "
+            "then CONTINUE the task by making the next tool call. "
+            "Do NOT summarize progress or ask the user what to do "
+            "— just continue where you left off.]"
+        )
+        if messages and messages[-1].get("role") == "user":
+            # Merge into existing user message to avoid consecutive user roles
+            messages[-1]["content"] = (
+                messages[-1].get("content", "") + "\n\n" + _resume_text
+            )
+        else:
+            messages.append({"role": "user", "content": _resume_text})
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -9125,6 +9156,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts <= max_compression_attempts:
                             original_len = len(messages)
+                            _was_mid_task = messages and messages[-1].get("role") == "tool"
                             messages, active_system_prompt = self._compress_context(
                                 messages, system_message,
                                 approx_tokens=approx_tokens,
@@ -9134,6 +9166,7 @@ class AIAgent:
                             # so _flush_messages_to_session_db writes compressed
                             # messages to the new session, not skipping them.
                             conversation_history = None
+                            self._inject_mid_task_resume(messages, _was_mid_task)
                             if len(messages) < original_len or old_ctx > _reduced_ctx:
                                 self._emit_status(
                                     f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
@@ -9189,6 +9222,7 @@ class AIAgent:
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
+                        _was_mid_task = messages and messages[-1].get("role") == "tool"
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
@@ -9197,6 +9231,7 @@ class AIAgent:
                         # so _flush_messages_to_session_db writes compressed
                         # messages to the new session, not skipping them.
                         conversation_history = None
+                        self._inject_mid_task_resume(messages, _was_mid_task)
 
                         if len(messages) < original_len:
                             self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
@@ -9319,6 +9354,7 @@ class AIAgent:
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
+                        _was_mid_task = messages and messages[-1].get("role") == "tool"
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
@@ -9327,6 +9363,7 @@ class AIAgent:
                         # so _flush_messages_to_session_db writes compressed
                         # messages to the new session, not skipping them.
                         conversation_history = None
+                        self._inject_mid_task_resume(messages, _was_mid_task)
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
@@ -10077,20 +10114,8 @@ class AIAgent:
                         # to the new session (see preflight compression comment).
                         conversation_history = None
 
-                        # Inject resume signal when compressed mid-task so the
-                        # model continues tool execution instead of stopping.
-                        if _was_mid_task:
-                            messages.append({
-                                "role": "user",
-                                "content": (
-                                    "[SYSTEM: Context was auto-compacted while you were "
-                                    "actively executing a multi-step task with tools. "
-                                    "Review the summary and recent tool results above, "
-                                    "then CONTINUE the task by making the next tool call. "
-                                    "Do NOT summarize progress or ask the user what to do "
-                                    "— just continue where you left off.]"
-                                ),
-                            })
+                        # Inject mid-task resume signal after compaction.
+                        self._inject_mid_task_resume(messages, _was_mid_task)
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages

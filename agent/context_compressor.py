@@ -33,11 +33,13 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION] Earlier turns were compacted into the summary "
-    "below. This is a handoff from a previous context window. Items under "
-    "'Done' or 'Resolved Questions' are already completed — do NOT redo them. "
-    "Items under 'In Progress', 'Remaining Work', or 'Pending User Asks' are "
-    "still active — continue working on them. The current session state "
-    "(files, config, etc.) reflects work described here — avoid repeating it:"
+    "below. This is a handoff from a previous context window. If the summary "
+    "includes structured sections: items under 'Done' or 'Resolved Questions' "
+    "are already completed — do NOT redo them; items under 'In Progress', "
+    "'Remaining Work', or 'Pending User Asks' are still active — continue "
+    "working on them. Always prioritize the most recent user message over "
+    "summary content. The current session state (files, config, etc.) "
+    "reflects work described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
