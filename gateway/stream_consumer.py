@@ -82,11 +82,13 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        reply_to: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        self.reply_to = reply_to
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -368,6 +370,13 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
+                        elif self._message_id and await self._finalize_native_stream(self._accumulated):
+                            # Adapter has a native streaming protocol (e.g. WeCom
+                            # reply-channel stream); ``finalize_stream`` closes
+                            # the stream with ``finish=True``. Must run even when
+                            # ``current_update_visible`` is set, otherwise the
+                            # stream is left hanging on the wire.
+                            self._final_response_sent = True
                         elif current_update_visible:
                             self._final_response_sent = True
                         elif self._message_id:
@@ -397,7 +406,27 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
-                    self._reset_segment_state(preserve_no_edit=True)
+                    # Adapters with a unified native stream (e.g. WeCom) reuse
+                    # a single stream for the entire response — closing it at
+                    # a tool boundary and reopening would fail the second
+                    # reply_req_id stream (platform limitation). Keep the
+                    # message state intact so subsequent deltas continue the
+                    # same stream via edit_message.
+                    # Strict ``is True`` — adapters opt in with a class-level
+                    # ``True`` constant. Using ``truthy`` would match MagicMock
+                    # auto-attributes in tests and wedge the existing
+                    # tool-boundary suite.
+                    if getattr(self.adapter, "native_streaming_unified", False) is True:
+                        pass
+                    else:
+                        # Close any active native stream before starting a fresh
+                        # segment; otherwise the previous stream keeps hanging
+                        # with ``finish=False`` and the client shows a stuck cursor.
+                        if self._message_id:
+                            await self._finalize_native_stream(
+                                self._last_sent_text or self._accumulated
+                            )
+                        self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
@@ -406,7 +435,10 @@ class GatewayStreamConsumer:
             _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
+                    if await self._finalize_native_stream(self._accumulated):
+                        _best_effort_ok = True
+                    else:
+                        _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
                 except Exception:
                     pass
             # Only confirm final delivery if the best-effort send above
@@ -629,6 +661,27 @@ class GatewayStreamConsumer:
             logger.error("Commentary send error: %s", e)
             return False
 
+    async def _finalize_native_stream(self, text: str) -> bool:
+        """Close a native-streaming adapter's stream with a final chunk.
+
+        Returns True when the adapter exposes ``finalize_stream`` and the call
+        succeeded. Returns False for adapters without native streaming, for
+        the ``__no_edit__`` sentinel, or when the adapter reports failure —
+        callers fall back to the generic send/edit path in that case.
+        """
+        if not hasattr(self.adapter, "finalize_stream"):
+            return False
+        if self._message_id in (None, "__no_edit__"):
+            return False
+        try:
+            result = await self.adapter.finalize_stream(
+                self.chat_id, self._message_id, text,
+            )
+        except Exception as exc:
+            logger.debug("finalize_stream raised: %s", exc)
+            return False
+        return bool(result and getattr(result, "success", False))
+
     async def _send_or_edit(self, text: str) -> bool:
         """Send or edit the streaming message.
 
@@ -727,11 +780,17 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new. Mark the send as ``streaming`` so
+                # adapters that support native stream protocols (e.g. WeCom)
+                # can open a long-running stream instead of treating this as a
+                # one-shot send.
+                first_send_metadata = dict(self.metadata) if self.metadata else {}
+                first_send_metadata["streaming"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
-                    metadata=self.metadata,
+                    reply_to=self.reply_to,
+                    metadata=first_send_metadata,
                 )
                 if result.success:
                     if result.message_id:
