@@ -212,16 +212,19 @@ class TestHonchoUserIdScoping:
 
     def test_gateway_user_id_overrides_peer_name(self):
         """When user_id is in kwargs and no explicit peer_name, user_id should be used."""
+        """When user_id is in kwargs and peer_name is empty, cfg.peer_name should be overridden."""
         from plugins.memory.honcho import HonchoMemoryProvider
 
         provider = HonchoMemoryProvider()
 
         # Create a mock config with NO explicit peer_name
+        # Create a mock config with an empty peer_name (should be overridden)
         mock_cfg = MagicMock()
         mock_cfg.enabled = True
         mock_cfg.api_key = "test-key"
         mock_cfg.base_url = None
         mock_cfg.peer_name = ""  # No explicit peer_name — user_id should fill it
+        mock_cfg.peer_name = ""
         mock_cfg.recall_mode = "tools"  # Use tools mode to defer session init
 
         with patch(
@@ -235,6 +238,7 @@ class TestHonchoUserIdScoping:
             )
 
         # The config's peer_name should have been overridden with the user_id
+        # (code only overrides when peer_name is falsy)
         assert mock_cfg.peer_name == "discord_user_789"
 
     def test_no_user_id_preserves_config_peer_name(self):
