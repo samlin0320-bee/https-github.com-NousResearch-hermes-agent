@@ -18,12 +18,13 @@ Configuration in config.yaml:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import dingtalk_stream
@@ -47,6 +48,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,14 @@ MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://api\.dingtalk\.com/')
+
+# DingTalk Stream only delivers these three msgtypes to chatbot callbacks.
+# The SDK exposes them as raw string literals, so we pin our own constants
+# to keep dispatch sites from growing divergent typos.
+_MSGTYPE_TEXT = "text"
+_MSGTYPE_PICTURE = "picture"
+_MSGTYPE_RICH_TEXT = "richText"
+_PICTURE_PLACEHOLDER = "[图片]"
 
 
 def check_dingtalk_requirements() -> bool:
@@ -86,6 +96,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._stream_client: Any = None
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
+        # Registered callback handler — kept around so picture downloads can
+        # piggyback on the SDK's access-token plumbing.
+        self._handler: Any = None
 
         # Message deduplication
         self._dedup = MessageDeduplicator(max_size=1000)
@@ -112,12 +125,13 @@ class DingTalkAdapter(BasePlatformAdapter):
             credential = dingtalk_stream.Credential(self._client_id, self._client_secret)
             self._stream_client = dingtalk_stream.DingTalkStreamClient(credential)
 
-            # Capture the current event loop for cross-thread dispatch
-            loop = asyncio.get_running_loop()
-            handler = _IncomingHandler(self, loop)
+            handler = _IncomingHandler(self)
             self._stream_client.register_callback_handler(
                 dingtalk_stream.ChatbotMessage.TOPIC, handler
             )
+            # register_callback_handler wires `handler.dingtalk_client = self`,
+            # giving us access_token + credential for OpenAPI calls.
+            self._handler = handler
 
             self._stream_task = asyncio.create_task(self._run_stream())
             self._mark_connected()
@@ -133,7 +147,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
-                await asyncio.to_thread(self._stream_client.start)
+                # dingtalk-stream >= 0.24 made start() a coroutine
+                if asyncio.iscoroutinefunction(self._stream_client.start):
+                    await self._stream_client.start()
+                else:
+                    await asyncio.to_thread(self._stream_client.start)
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -167,6 +185,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             self._http_client = None
 
         self._stream_client = None
+        self._handler = None
         self._session_webhooks.clear()
         self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
@@ -180,10 +199,19 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
 
-        text = self._extract_text(message)
+        msgtype = getattr(message, "message_type", None) or ""
+        text = self._extract_text(message, msgtype)
+
+        # Empty plain-text is usually a stripped at-mention or keep-alive — drop it.
+        # Every other msgtype still dispatches with a placeholder so the agent
+        # knows something non-text arrived.
         if not text:
-            logger.debug("[%s] Empty message, skipping", self.name)
-            return
+            if msgtype in ("", _MSGTYPE_TEXT):
+                logger.debug("[%s] Empty text message, skipping", self.name)
+                return
+            text = f"[未能解析的 {msgtype} 类型消息]"
+
+        event_type = MessageType.PHOTO if msgtype == _MSGTYPE_PICTURE else MessageType.TEXT
 
         # Chat context
         conversation_id = getattr(message, "conversation_id", "") or ""
@@ -223,36 +251,140 @@ class DingTalkAdapter(BasePlatformAdapter):
         except (ValueError, OSError, TypeError):
             timestamp = datetime.now(tz=timezone.utc)
 
+        # Download picture attachments so the vision model sees real bytes
+        # instead of the [图片] placeholder. Applies to both `picture` and
+        # `richText` msgtypes (richText can carry inline images).
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        if msgtype in (_MSGTYPE_PICTURE, _MSGTYPE_RICH_TEXT):
+            media_urls, media_types = await self._fetch_picture_attachments(message)
+            if media_urls and msgtype == _MSGTYPE_PICTURE:
+                # Swap the bare placeholder for a short caption so the agent
+                # knows to look at the attachment list.
+                text = f"[图片 × {len(media_urls)}]"
+
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=event_type,
             source=source,
             message_id=msg_id,
             raw_message=message,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
         logger.debug("[%s] Message from %s in %s: %s",
                       self.name, sender_nick, chat_id[:20] if chat_id else "?", text[:50])
         await self.handle_message(event)
 
-    @staticmethod
-    def _extract_text(message: "ChatbotMessage") -> str:
-        """Extract plain text from a DingTalk chatbot message."""
-        text = getattr(message, "text", None) or ""
-        if isinstance(text, dict):
-            content = text.get("content", "").strip()
-        else:
-            content = str(text).strip()
+    async def _fetch_picture_attachments(
+        self, message: "ChatbotMessage"
+    ) -> Tuple[List[str], List[str]]:
+        """Download every picture referenced by an inbound message.
 
-        # Fall back to rich text if present
-        if not content:
-            rich_text = getattr(message, "rich_text", None)
-            if rich_text and isinstance(rich_text, list):
-                parts = [item["text"] for item in rich_text
-                         if isinstance(item, dict) and item.get("text")]
-                content = " ".join(parts).strip()
-        return content
+        Uses the SDK's `get_image_download_url` (sync) to exchange each
+        downloadCode for a short-lived CDN URL, then fetches the bytes
+        via the adapter's async httpx client and caches them locally so
+        the vision tool can read them as file paths.
+
+        Returns a `(media_urls, media_types)` pair. Empty on any failure
+        — callers fall back to the `[图片]` text placeholder.
+        """
+        if self._handler is None:
+            return [], []
+        try:
+            codes = [c for c in (message.get_image_list() or []) if c]
+        except AttributeError:
+            logger.exception("[%s] get_image_list failed", self.name)
+            return [], []
+        if not codes:
+            return [], []
+
+        paths = [p for p in await asyncio.gather(*(self._fetch_one(c) for c in codes)) if p]
+        if paths:
+            logger.info("[%s] Cached %d inbound picture(s)", self.name, len(paths))
+        return paths, ["image/jpeg"] * len(paths)
+
+    async def _fetch_one(self, code: str) -> Optional[str]:
+        """Exchange one downloadCode for a cached local path.
+
+        SDK's `get_image_download_url` is sync (requests-based) — offloaded
+        to a thread so a slow token refresh doesn't stall the event loop.
+        `cache_image_from_url` handles retries + SSRF guarding.
+        """
+        try:
+            download_url = await asyncio.to_thread(
+                self._handler.get_image_download_url, code
+            )
+        except Exception:
+            logger.exception("[%s] get_image_download_url failed", self.name)
+            return None
+        if not download_url:
+            logger.warning("[%s] No downloadUrl for code %s…", self.name, code[:16])
+            return None
+        try:
+            return await cache_image_from_url(download_url, ext=".jpg")
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("[%s] Picture cache failed: %s", self.name, e)
+            return None
+
+    @staticmethod
+    def _extract_text(message: "ChatbotMessage", msgtype: Optional[str] = None) -> str:
+        """Render a DingTalk chatbot message as human-readable text.
+
+        Picture downloads require ``robot/messageFiles/download``; if the
+        adapter fails to retrieve bytes, picture segments fall back to a
+        ``[图片]`` placeholder so the agent at least sees that something
+        visual arrived.
+        """
+        if msgtype is None:
+            msgtype = getattr(message, "message_type", None) or ""
+
+        if msgtype == _MSGTYPE_TEXT:
+            return DingTalkAdapter._read_plain_text(message)
+        if msgtype == _MSGTYPE_RICH_TEXT:
+            return DingTalkAdapter._render_rich_text(message)
+        if msgtype == _MSGTYPE_PICTURE:
+            return _PICTURE_PLACEHOLDER
+        if msgtype:
+            return f"[未支持的消息类型: {msgtype}]"
+        return DingTalkAdapter._read_plain_text(message)
+
+    @staticmethod
+    def _read_plain_text(message: "ChatbotMessage") -> str:
+        text_attr = getattr(message, "text", None)
+        if text_attr is None:
+            return ""
+        if hasattr(text_attr, "content"):
+            return (text_attr.content or "").strip()
+        if isinstance(text_attr, dict):
+            return (text_attr.get("content") or "").strip()
+        return str(text_attr).strip()
+
+    @staticmethod
+    def _render_rich_text(message: "ChatbotMessage") -> str:
+        rich = getattr(message, "rich_text_content", None)
+        items = getattr(rich, "rich_text_list", None) if rich is not None else None
+        if not isinstance(items, list):
+            return ""
+
+        out = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text_val = item.get("text")
+            if text_val:
+                out.append(str(text_val))
+                continue
+            if item.get("downloadCode") or item.get("type") == "picture":
+                out.append(_PICTURE_PLACEHOLDER)
+                continue
+            if item.get("type") == "at":
+                who = item.get("name") or item.get("userId")
+                if who:
+                    out.append(f"@{who}")
+        return " ".join(out).strip()
 
     # -- Outbound messaging -------------------------------------------------
 
@@ -308,25 +440,28 @@ class DingTalkAdapter(BasePlatformAdapter):
 class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
     """dingtalk-stream ChatbotHandler that forwards messages to the adapter."""
 
-    def __init__(self, adapter: DingTalkAdapter, loop: asyncio.AbstractEventLoop):
+    def __init__(self, adapter: DingTalkAdapter):
         if DINGTALK_STREAM_AVAILABLE:
             super().__init__()
         self._adapter = adapter
-        self._loop = loop
 
-    def process(self, message: "ChatbotMessage"):
-        """Called by dingtalk-stream in its thread when a message arrives.
+    async def process(self, callback):
+        """Called by dingtalk-stream when a message arrives.
 
-        Schedules the async handler on the main event loop.
+        dingtalk-stream >= 0.24 made this an async callback and passes a
+        ``CallbackMessage`` instead of a ``ChatbotMessage``. Convert the
+        payload so downstream code always sees ``ChatbotMessage``.
         """
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            logger.error("[DingTalk] Event loop unavailable, cannot dispatch message")
-            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
-
-        future = asyncio.run_coroutine_threadsafe(self._adapter._on_message(message), loop)
         try:
-            future.result(timeout=60)
+            if isinstance(callback, dingtalk_stream.chatbot.ChatbotMessage):
+                message = callback
+            else:
+                # CallbackMessage — parse .data into ChatbotMessage
+                data = callback.data
+                if isinstance(data, str):
+                    data = json.loads(data)
+                message = dingtalk_stream.ChatbotMessage.from_dict(data)
+            await self._adapter._on_message(message)
         except Exception:
             logger.exception("[DingTalk] Error processing incoming message")
 
