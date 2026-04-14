@@ -44,7 +44,7 @@ def _reset_logging_state():
             root.removeHandler(h)
             h.close()
     hermes_logging._logging_initialized = False
-    hermes_logging.clear_session_context()
+    hermes_logging._session_context.session_id = None
 
 
 @pytest.fixture
@@ -343,7 +343,7 @@ class TestSessionContext:
     def test_no_session_tag_without_context(self, hermes_home):
         """Without session context, log lines have no session tag."""
         hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.clear_session_context()
+        hermes_logging._session_context.session_id = None
 
         test_logger = logging.getLogger("test.no_session")
         test_logger.info("untagged message")
@@ -364,7 +364,7 @@ class TestSessionContext:
         """After clearing, session tag disappears."""
         hermes_logging.setup_logging(hermes_home=hermes_home)
         hermes_logging.set_session_context("xyz789")
-        hermes_logging.clear_session_context()
+        hermes_logging._session_context.session_id = None
 
         test_logger = logging.getLogger("test.cleared")
         test_logger.info("after clear")
@@ -424,7 +424,7 @@ class TestRecordFactory:
         assert hasattr(record, "session_tag")
 
     def test_empty_tag_without_context(self):
-        hermes_logging.clear_session_context()
+        hermes_logging._session_context.session_id = None
         factory = logging.getLogRecordFactory()
         record = factory("test", logging.INFO, "", 0, "msg", (), None)
         assert record.session_tag == ""

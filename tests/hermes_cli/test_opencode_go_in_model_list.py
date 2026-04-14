@@ -5,18 +5,24 @@ from unittest.mock import patch
 
 from hermes_cli.model_switch import list_authenticated_providers
 
+_FAKE_MODELS_DEV = {
+    "opencode-go": {
+        "env": ["OPENCODE_GO_API_KEY"],
+        "models": ["glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5"],
+    },
+}
 
+
+@patch("agent.models_dev.fetch_models_dev", return_value=_FAKE_MODELS_DEV)
 @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)
-def test_opencode_go_appears_when_api_key_set():
+def test_opencode_go_appears_when_api_key_set(_mock_fetch):
     """opencode-go should appear in list_authenticated_providers when OPENCODE_GO_API_KEY is set."""
     providers = list_authenticated_providers(current_provider="openrouter")
-    
-    # Find opencode-go in results
+
     opencode_go = next((p for p in providers if p["slug"] == "opencode-go"), None)
-    
+
     assert opencode_go is not None, "opencode-go should appear when OPENCODE_GO_API_KEY is set"
     assert opencode_go["models"] == ["glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5"]
-    # opencode-go is in PROVIDER_TO_MODELS_DEV, so it appears as "built-in"
     assert opencode_go["source"] == "built-in"
 
 
