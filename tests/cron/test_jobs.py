@@ -18,11 +18,19 @@ from cron.jobs import (
     update_job,
     pause_job,
     resume_job,
+    trigger_job,
     remove_job,
+    mark_job_started,
+    finalize_job_run,
     mark_job_run,
     advance_next_run,
     get_due_jobs,
+    claim_due_jobs,
+    recover_stale_inflight,
     save_job_output,
+    update_delivery_error_if_latest,
+    _get_inflight_owner_state,
+    _pid_is_alive,
 )
 
 
@@ -299,6 +307,101 @@ class TestPauseResumeJob:
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
 
+    def test_trigger_job_keeps_paused_state(self, tmp_cron_dir):
+        job = create_job(prompt="Trigger me", schedule="every 1h")
+        pause_job(job["id"], reason="user paused")
+
+        triggered = trigger_job(job["id"])
+
+        assert triggered is not None
+        assert triggered["enabled"] is False
+        assert triggered["state"] == "paused"
+        assert triggered["trigger_once_at"] is not None
+
+    def test_claim_due_jobs_includes_triggered_paused_job_without_unpausing(self, tmp_cron_dir):
+        job = create_job(prompt="Trigger me", schedule="every 1h")
+        pause_job(job["id"], reason="user paused")
+        trigger_job(job["id"])
+
+        from cron.jobs import _hermes_now
+        claimed = claim_due_jobs(now=_hermes_now(), owner_instance_id="instance-a", max_parallel=1)
+
+        assert len(claimed) == 1
+        assert claimed[0]["id"] == job["id"]
+        assert claimed[0]["state"] == "paused"
+        assert claimed[0]["enabled"] is False
+
+        persisted = get_job(job["id"])
+        assert persisted is not None
+        assert persisted["state"] == "paused"
+        assert persisted["enabled"] is False
+        assert persisted["trigger_once_at"] is None
+        assert persisted["in_flight"] is not None
+
+    def test_triggered_paused_job_shows_running_while_in_flight(self, tmp_cron_dir):
+        job = create_job(prompt="Trigger me", schedule="every 1h")
+        pause_job(job["id"], reason="user paused")
+        trigger_job(job["id"])
+
+        from cron.jobs import _hermes_now
+        claimed = claim_due_jobs(now=_hermes_now(), owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+        run_id = claimed[0]["in_flight"]["run_id"]
+
+        assert mark_job_started(job["id"], run_id, started_at=_hermes_now().isoformat()) is True
+
+        running = get_job(job["id"])
+        assert running is not None
+        assert running["state"] == "paused"
+        assert running["enabled"] is False
+        assert running["in_flight"] is not None
+        assert running["in_flight"]["status"] == "running"
+
+    def test_triggered_paused_job_finishes_and_remains_paused(self, tmp_cron_dir):
+        job = create_job(prompt="Trigger me", schedule="every 1h")
+        pause_job(job["id"], reason="user paused")
+        trigger_job(job["id"])
+
+        from cron.jobs import _hermes_now
+        claimed = claim_due_jobs(now=_hermes_now(), owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+        run_id = claimed[0]["in_flight"]["run_id"]
+        finished_at = _hermes_now().isoformat()
+
+        assert mark_job_started(job["id"], run_id, started_at=finished_at) is True
+        assert finalize_job_run(job["id"], run_id, True, finished_at=finished_at) is True
+
+        completed = get_job(job["id"])
+        assert completed is not None
+        assert completed["state"] == "paused"
+        assert completed["enabled"] is False
+        assert completed["in_flight"] is None
+        assert completed["last_status"] == "ok"
+        assert completed["last_run_at"] == finished_at
+        assert completed["next_run_at"] is not None
+
+    def test_triggered_paused_job_can_be_triggered_again_after_completion(self, tmp_cron_dir):
+        job = create_job(prompt="Trigger me", schedule="every 1h")
+        pause_job(job["id"], reason="user paused")
+
+        from cron.jobs import _hermes_now
+        trigger_job(job["id"])
+        first = claim_due_jobs(now=_hermes_now(), owner_instance_id="instance-a", max_parallel=1)
+        assert len(first) == 1
+        first_run_id = first[0]["in_flight"]["run_id"]
+        first_finished_at = _hermes_now().isoformat()
+        assert mark_job_started(job["id"], first_run_id, started_at=first_finished_at) is True
+        assert finalize_job_run(job["id"], first_run_id, True, finished_at=first_finished_at) is True
+
+        trigger_job(job["id"])
+        second = claim_due_jobs(now=_hermes_now(), owner_instance_id="instance-a", max_parallel=1)
+        assert len(second) == 1
+        assert second[0]["id"] == job["id"]
+        assert second[0]["state"] == "paused"
+        assert second[0]["enabled"] is False
+        assert second[0]["in_flight"] is not None
+        assert second[0]["in_flight"]["run_id"] != first_run_id
+
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
@@ -368,6 +471,36 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
+
+
+class TestDeliveryStatusUpdates:
+    def test_update_delivery_error_if_latest_updates_matching_run(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error=None)
+        latest = get_job(job["id"])
+        run_at = latest["last_run_at"]
+
+        updated = update_delivery_error_if_latest(job["id"], run_at, "telegram down")
+        assert updated is True
+
+        latest = get_job(job["id"])
+        assert latest["last_delivery_error"] == "telegram down"
+
+    def test_update_delivery_error_if_latest_rejects_stale_run(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error=None)
+        first_run_at = get_job(job["id"])["last_run_at"]
+
+        mark_job_run(job["id"], success=True, delivery_error="current failure")
+        latest = get_job(job["id"])
+        assert latest["last_delivery_error"] == "current failure"
+        assert latest["last_run_at"] != first_run_at
+
+        updated = update_delivery_error_if_latest(job["id"], first_run_at, "stale overwrite")
+        assert updated is False
+
+        latest = get_job(job["id"])
+        assert latest["last_delivery_error"] == "current failure"
 
 
 class TestAdvanceNextRun:
@@ -564,6 +697,468 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+
+class TestInFlightRecovery:
+    def test_stale_inflight_claim_is_recovered(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Stale candidate", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+
+        claimed_state = get_job(job["id"])
+        assert claimed_state is not None
+        assert claimed_state.get("in_flight")
+
+        timeout_at = datetime.fromisoformat(claimed_state["in_flight"]["timeout_at"])
+        recovered = recover_stale_inflight(now=timeout_at + timedelta(seconds=1))
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert updated.get("last_status") == "error"
+        assert updated.get("repeat", {}).get("completed") == 1
+        assert "stale_recovered" in (updated.get("last_error") or "")
+
+    def test_stale_recovery_respects_repeat_limit(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Run once", schedule="every 1h", repeat=1)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+
+        claimed_state = get_job(job["id"])
+        assert claimed_state is not None
+        timeout_at = datetime.fromisoformat(claimed_state["in_flight"]["timeout_at"])
+
+        recovered = recover_stale_inflight(now=timeout_at + timedelta(seconds=1))
+        assert recovered == 1
+        assert get_job(job["id"]) is None
+
+    def test_timeout_recovery_restores_recurring_slot_to_claim_time(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Restore slot", schedule="every 1h")
+        jobs = load_jobs()
+        original_due = (now - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = original_due
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+        claimed_at = claimed[0]["in_flight"]["claimed_at"]
+
+        claimed_state = get_job(job["id"])
+        timeout_at = datetime.fromisoformat(claimed_state["in_flight"]["timeout_at"])
+        recovered = recover_stale_inflight(now=timeout_at + timedelta(seconds=1))
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert updated["next_run_at"] == claimed_at
+
+
+class TestOrphanedInFlightRecovery:
+    def test_orphaned_inflight_is_recovered_before_timeout_when_owner_is_dead(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Orphan candidate", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+
+        claimed_state = get_job(job["id"])
+        assert claimed_state is not None
+        assert claimed_state.get("in_flight")
+        assert claimed_state["in_flight"]["owner_pid"] > 0
+
+        future_recovery_time = now + timedelta(seconds=90)
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("dead", "owner pid not alive"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=future_recovery_time)
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert updated.get("last_status") == "error"
+        assert "orphan_recovered" in (updated.get("last_error") or "")
+
+    def test_live_owner_is_not_recovered_before_timeout(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Live owner", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("alive", "owner still alive"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+        assert recovered == 0
+        assert get_job(job["id"])["in_flight"] is not None
+
+    def test_unknown_owner_state_falls_back_to_timeout_only(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Unknown owner", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("unknown", "no fingerprint"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        assert recover_stale_inflight(now=now + timedelta(seconds=90)) == 0
+
+        timeout_at = datetime.fromisoformat(get_job(job["id"])["in_flight"]["timeout_at"])
+        assert recover_stale_inflight(now=timeout_at + timedelta(seconds=1)) == 1
+
+    def test_legacy_owner_instance_id_pid_can_be_recovered_early(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Legacy orphan", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="43210-legacyaa", max_parallel=1)
+
+        jobs = load_jobs()
+        jobs[0]["in_flight"] = {
+            "run_id": jobs[0]["in_flight"]["run_id"],
+            "owner_instance_id": "43210-legacyaa",
+            "claimed_at": jobs[0]["in_flight"]["claimed_at"],
+            "timeout_at": jobs[0]["in_flight"]["timeout_at"],
+            "started_at": jobs[0]["in_flight"]["started_at"],
+            "status": jobs[0]["in_flight"]["status"],
+        }
+        save_jobs(jobs)
+
+        monkeypatch.setattr("cron.jobs._legacy_owner_pid_is_dead", lambda pid: True)
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert "orphan_recovered" in (updated.get("last_error") or "")
+
+    def test_malformed_legacy_owner_id_does_not_guess(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Malformed owner", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        jobs = load_jobs()
+        jobs[0]["in_flight"] = {
+            "run_id": jobs[0]["in_flight"]["run_id"],
+            "owner_instance_id": "weird-format",
+            "claimed_at": jobs[0]["in_flight"]["claimed_at"],
+            "timeout_at": jobs[0]["in_flight"]["timeout_at"],
+            "started_at": jobs[0]["in_flight"]["started_at"],
+            "status": jobs[0]["in_flight"]["status"],
+        }
+        save_jobs(jobs)
+
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        assert recover_stale_inflight(now=now + timedelta(seconds=90)) == 0
+        timeout_at = datetime.fromisoformat(get_job(job["id"])["in_flight"]["timeout_at"])
+        assert recover_stale_inflight(now=timeout_at + timedelta(seconds=1)) == 1
+
+    def test_missing_timeout_at_does_not_recover_while_owner_is_alive(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Missing timeout", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        jobs = load_jobs()
+        jobs[0]["in_flight"].pop("timeout_at", None)
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("alive", "owner still alive"),
+        )
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=30))
+        assert recovered == 0
+        assert get_job(job["id"])["in_flight"] is not None
+
+    def test_malformed_timeout_at_recovers_after_timeout_window_when_owner_unknown(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Malformed timeout", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        jobs = load_jobs()
+        jobs[0]["in_flight"]["timeout_at"] = "not-a-timestamp"
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("unknown", "owner could not be verified"),
+        )
+        monkeypatch.setattr("cron.jobs._cron_timeout_seconds", lambda: 60.0)
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        assert recover_stale_inflight(now=now + timedelta(seconds=30)) == 0
+        assert get_job(job["id"])["in_flight"] is not None
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=91))
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert updated.get("last_status") == "error"
+        assert "invalid_timeout_at" in (updated.get("last_error") or "")
+
+    def test_owner_fingerprint_mismatch_is_recovered_before_timeout(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Mismatch owner", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("mismatch", "owner pid fingerprint mismatch"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert updated.get("last_status") == "error"
+        assert "orphan_recovered" in (updated.get("last_error") or "")
+
+    def test_orphan_recovery_waits_for_grace_window(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Grace window", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("dead", "owner pid not alive"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 60.0)
+
+        assert recover_stale_inflight(now=now + timedelta(seconds=30)) == 0
+        assert get_job(job["id"])["in_flight"] is not None
+        assert recover_stale_inflight(now=now + timedelta(seconds=61)) == 1
+
+    def test_orphan_recovery_respects_repeat_limit(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Run once", schedule="every 1h", repeat=1)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("dead", "owner pid not alive"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+        assert recovered == 1
+        assert get_job(job["id"]) is None
+
+    def test_started_orphaned_recurring_job_is_recovered_and_requeued(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Started orphan", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+        assert len(claimed) == 1
+        claimed_at = claimed[0]["in_flight"]["claimed_at"]
+
+        jobs = load_jobs()
+        jobs[0]["in_flight"]["status"] = "running"
+        jobs[0]["in_flight"]["started_at"] = (now + timedelta(seconds=5)).isoformat()
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._get_inflight_owner_state",
+            lambda inflight, now_dt=None: ("dead", "owner pid not alive"),
+        )
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+        assert recovered == 1
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert updated["next_run_at"] == claimed_at
+        assert updated["state"] == "scheduled"
+        assert "orphan_recovered" in (updated.get("last_error") or "")
+
+
+class TestOwnerLivenessHelpers:
+    def test_pid_is_alive_treats_linux_zombie_as_dead(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "linux")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._linux_process_state", lambda pid: "Z")
+
+        assert _pid_is_alive(12345) is False
+
+    def test_pid_is_alive_on_darwin_uses_posix_kill(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+
+        assert _pid_is_alive(12345) is True
+
+    def test_get_inflight_owner_state_on_darwin_confirms_matching_identity(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-1")
+
+        state, reason = _get_inflight_owner_state(
+            {
+                "owner_pid": 12345,
+                "owner_boot_id": "boot-1",
+                "owner_process_start": "start-1",
+            }
+        )
+
+        assert state == "alive"
+        assert "fingerprint matches" in reason
+
+    def test_get_inflight_owner_state_on_darwin_detects_pid_reuse(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-2")
+
+        state, reason = _get_inflight_owner_state(
+            {
+                "owner_pid": 12345,
+                "owner_boot_id": "boot-1",
+                "owner_process_start": "start-1",
+            }
+        )
+
+        assert state == "mismatch"
+        assert "fingerprint mismatch" in reason
+
+    def test_claim_due_jobs_records_darwin_owner_fingerprint(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.getpid", lambda: 24680)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-1")
+
+        job = create_job(prompt="Darwin claim", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        claimed = claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        assert [entry["id"] for entry in claimed] == [job["id"]]
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["in_flight"]["owner_pid"] == 24680
+        assert updated["in_flight"]["owner_boot_id"] == "boot-1"
+        assert updated["in_flight"]["owner_process_start"] == "start-1"
+
+    def test_recover_stale_inflight_recovers_darwin_pid_reuse_early(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("cron.jobs.sys.platform", "darwin")
+        monkeypatch.setattr("cron.jobs.os.getpid", lambda: 24680)
+        monkeypatch.setattr("cron.jobs.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("cron.jobs._darwin_boot_fingerprint", lambda: "boot-1")
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-1")
+
+        job = create_job(prompt="Darwin orphan", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        claim_due_jobs(now=now, owner_instance_id="instance-a", max_parallel=1)
+
+        monkeypatch.setattr("cron.jobs._darwin_process_start_fingerprint", lambda pid: "start-2")
+        monkeypatch.setattr("cron.jobs._orphan_recovery_grace_seconds", lambda: 30.0)
+
+        recovered = recover_stale_inflight(now=now + timedelta(seconds=90))
+
+        assert recovered == 1
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated.get("in_flight") is None
+        assert "orphan_recovered" in (updated.get("last_error") or "")
 
 
 class TestSaveJobOutput:
