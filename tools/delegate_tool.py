@@ -78,8 +78,15 @@ def _get_max_concurrent_children() -> int:
             pass
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 DEFAULT_MAX_ITERATIONS = 50
-_HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
+_HEARTBEAT_INTERVAL = 15  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+# --- Subagent termination constants ---
+DEFAULT_MAX_DURATION = 300    # 5 min wall clock per subagent
+STALL_WINDOW = 6              # look at last N tool calls for stall detection
+STALL_ERROR_THRESHOLD = 0.5   # >50% errors = stall
+STALL_REPEAT_THRESHOLD = 5    # same tool called N times in a row with no result change
+STALL_NAV_LOOP_THRESHOLD = 4  # browser_navigate to similar URLs
 
 
 def check_delegate_requirements() -> bool:
@@ -396,11 +403,111 @@ def _build_child_agent(
 
     return child
 
+
+def _detect_stall(messages: list) -> tuple:
+    """Analyze conversation messages for stall patterns.
+
+    Returns (is_stalled: bool, reason: str).
+    Thread-safe: only reads the list snapshot passed in.
+    """
+    if not messages or not isinstance(messages, list):
+        return False, ""
+
+    # Extract recent tool calls with their results
+    tool_calls: list = []  # [(tool_name, args_str, result_content, is_error)]
+    # Build mapping: tool_call_id -> (tool_name, args_str)
+    pending: dict = {}
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant":
+            for tc in (msg.get("tool_calls") or []):
+                fn = tc.get("function", {})
+                name = fn.get("name", "unknown")
+                args = fn.get("arguments", "")
+                tc_id = tc.get("id")
+                if tc_id:
+                    pending[tc_id] = (name, args)
+        elif role == "tool":
+            tc_id = msg.get("tool_call_id")
+            content = msg.get("content", "")
+            is_error = bool(content and "error" in content[:120].lower())
+            if tc_id and tc_id in pending:
+                name, args = pending[tc_id]
+                tool_calls.append((name, args, content, is_error))
+            elif tool_calls:
+                # fallback: attribute to last known call
+                pass
+
+    if len(tool_calls) < 3:
+        return False, ""
+
+    # Check 1: High error rate in last STALL_WINDOW calls
+    recent = tool_calls[-STALL_WINDOW:]
+    if len(recent) >= STALL_WINDOW:
+        error_count = sum(1 for _, _, _, is_err in recent if is_err)
+        error_rate = error_count / len(recent)
+        if error_rate > STALL_ERROR_THRESHOLD:
+            return True, (
+                f"High error rate: {error_count}/{len(recent)} recent tool calls "
+                f"returned errors ({error_rate:.0%})"
+            )
+
+    # Check 2: URL navigation loop
+    nav_calls = [
+        (name, args) for name, args, _, _ in tool_calls
+        if name == "browser_navigate"
+    ]
+    if len(nav_calls) >= STALL_NAV_LOOP_THRESHOLD:
+        recent_navs = nav_calls[-STALL_NAV_LOOP_THRESHOLD:]
+        # Extract URLs from args JSON
+        urls = []
+        for _, args_str in recent_navs:
+            try:
+                parsed = json.loads(args_str) if isinstance(args_str, str) else args_str
+                url = parsed.get("url", "") if isinstance(parsed, dict) else ""
+                # Normalize: strip trailing slashes, fragments, query params for similarity
+                url_base = url.split("?")[0].split("#")[0].rstrip("/")
+                urls.append(url_base)
+            except (json.JSONDecodeError, AttributeError):
+                urls.append("")
+
+        # Check if all recent nav URLs are similar (same base)
+        non_empty = [u for u in urls if u]
+        if len(non_empty) >= STALL_NAV_LOOP_THRESHOLD:
+            unique_urls = set(non_empty)
+            if len(unique_urls) <= 2:
+                return True, (
+                    f"URL navigation loop: browser_navigate called "
+                    f"{len(recent_navs)} times with similar URLs: "
+                    f"{', '.join(unique_urls)}"
+                )
+
+    # Check 3: Same tool called repeatedly with no meaningful result changes
+    if len(tool_calls) >= STALL_REPEAT_THRESHOLD:
+        recent_n = tool_calls[-STALL_REPEAT_THRESHOLD:]
+        names = [name for name, _, _, _ in recent_n]
+        if len(set(names)) == 1:
+            # All same tool - check if results are similar
+            results = [content[:200] for _, _, content, _ in recent_n]
+            unique_results = set(results)
+            if len(unique_results) <= 2:
+                return True, (
+                    f"No progress: {names[0]} called {STALL_REPEAT_THRESHOLD} "
+                    f"times in a row with no meaningful result changes"
+                )
+
+    return False, ""
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
     child=None,
     parent_agent=None,
+    max_duration: int = DEFAULT_MAX_DURATION,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -435,9 +542,43 @@ def _run_single_child(
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
+    _termination_reason = [None]  # mutable container for thread-safe flag: None, "timeout", or "stalled:<reason>"
 
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+            # --- Wall clock timeout check ---
+            elapsed = time.monotonic() - child_start
+            if max_duration and elapsed > max_duration:
+                _termination_reason[0] = "timeout"
+                logger.info(
+                    "[subagent-%d] Wall clock timeout after %.0fs (limit: %ds)",
+                    task_index, elapsed, max_duration,
+                )
+                try:
+                    child.interrupt(f"Subagent wall clock timeout ({max_duration}s)")
+                except Exception:
+                    logger.debug("[subagent-%d] Failed to interrupt on timeout", task_index)
+                break
+
+            # --- Stall detection ---
+            try:
+                child_messages = list(getattr(child, '_session_messages', []) or [])
+                if child_messages:
+                    is_stalled, stall_reason = _detect_stall(child_messages)
+                    if is_stalled:
+                        _termination_reason[0] = f"stalled:{stall_reason}"
+                        logger.info(
+                            "[subagent-%d] Stall detected: %s",
+                            task_index, stall_reason,
+                        )
+                        try:
+                            child.interrupt(f"Subagent stall detected: {stall_reason}")
+                        except Exception:
+                            logger.debug("[subagent-%d] Failed to interrupt on stall", task_index)
+                        break
+            except Exception:
+                logger.debug("[subagent-%d] Stall detection error", task_index, exc_info=True)
+
             if parent_agent is None:
                 continue
             touch = getattr(parent_agent, '_touch_activity', None)
@@ -534,7 +675,23 @@ def _run_single_child(
                         tool_trace[-1].update(result_meta)
 
         # Determine exit reason
-        if interrupted:
+        term_reason = _termination_reason[0]
+        if term_reason == "timeout":
+            exit_reason = "timeout"
+            status = "interrupted"
+            if summary:
+                summary += f"\n\n[Subagent terminated: wall clock timeout ({max_duration}s)]"
+            else:
+                summary = f"Subagent terminated: wall clock timeout ({max_duration}s)"
+        elif term_reason and term_reason.startswith("stalled:"):
+            stall_detail = term_reason[len("stalled:"):]
+            exit_reason = "stalled"
+            status = "interrupted"
+            if summary:
+                summary += f"\n\n[Subagent terminated: {stall_detail}]"
+            else:
+                summary = f"Subagent terminated due to stall: {stall_detail}"
+        elif interrupted:
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
@@ -656,6 +813,7 @@ def delegate_task(
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
+    effective_max_duration = cfg.get("max_duration", DEFAULT_MAX_DURATION)
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -731,7 +889,7 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        result = _run_single_child(0, _t["goal"], child, parent_agent, max_duration=effective_max_duration)
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -747,6 +905,7 @@ def delegate_task(
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    max_duration=effective_max_duration,
                 )
                 futures[future] = i
 
