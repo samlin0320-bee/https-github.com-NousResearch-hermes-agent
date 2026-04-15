@@ -79,6 +79,13 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
+def _current_write_denied_paths() -> set[str]:
+    """Return exact denied paths, including the active HERMES_HOME secret file."""
+    paths = set(WRITE_DENIED_PATHS)
+    paths.add(os.path.realpath(str(get_hermes_home() / ".env")))
+    return paths
+
+
 def _get_safe_write_root() -> Optional[str]:
     """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
 
@@ -101,7 +108,7 @@ def _is_write_denied(path: str) -> bool:
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     # 1) Static deny list
-    if resolved in WRITE_DENIED_PATHS:
+    if resolved in _current_write_denied_paths():
         return True
     for prefix in WRITE_DENIED_PREFIXES:
         if resolved.startswith(prefix):
