@@ -10,8 +10,9 @@ lifecycle instead of read-only search endpoints.
 Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account (default: root)
-  OPENVIKING_USER      — Tenant user (default: default)
+  OPENVIKING_ACCOUNT   — Tenant account (default: default)
+  OPENVIKING_USER      — Tenant user (default: hermes)
+  OPENVIKING_AGENT     — Tenant agent (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -80,11 +81,12 @@ class _VikingClient:
     """Thin HTTP client for the OpenViking REST API."""
 
     def __init__(self, endpoint: str, api_key: str = "",
-                 account: str = "", user: str = ""):
+                 account: str = "", user: str = "", agent: str = ""):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "root")
-        self._user = user or os.environ.get("OPENVIKING_USER", "default")
+        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
+        self._user = user or os.environ.get("OPENVIKING_USER", "hermes")
+        self._agent = agent or os.environ.get("OPENVIKING_AGENT", "hermes")
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -94,6 +96,7 @@ class _VikingClient:
             "Content-Type": "application/json",
             "X-OpenViking-Account": self._account,
             "X-OpenViking-User": self._user,
+            "X-OpenViking-Agent": self._agent,
         }
         if self._api_key:
             h["X-API-Key"] = self._api_key
@@ -259,6 +262,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._turn_count = 0
         self._sync_thread: Optional[threading.Thread] = None
+        self._memwrite_thread: Optional[threading.Thread] = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
@@ -288,6 +292,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
         ]
 
+    def _ensure_session(self) -> bool:
+        if not self._client or not self._session_id:
+            return False
+        try:
+            self._client.get(
+                f"/api/v1/sessions/{self._session_id}",
+                params={"auto_create": "true"},
+            )
+            return True
+        except Exception as e:
+            logger.warning("OpenViking session ensure failed for %s: %s", self._session_id, e)
+            return False
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
         self._api_key = os.environ.get("OPENVIKING_API_KEY", "")
@@ -299,6 +316,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if not self._client.health():
                 logger.warning("OpenViking server at %s is not reachable", self._endpoint)
                 self._client = None
+            else:
+                self._ensure_session()
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -388,6 +407,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             try:
                 client = _VikingClient(self._endpoint, self._api_key)
                 sid = self._session_id
+                client.get(f"/api/v1/sessions/{sid}", params={"auto_create": "true"})
 
                 # Add user message
                 client.post(f"/api/v1/sessions/{sid}/messages", {
@@ -425,11 +445,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # the count hasn't been incremented yet.
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
+        if self._memwrite_thread and self._memwrite_thread.is_alive():
+            self._memwrite_thread.join(timeout=10.0)
 
         if self._turn_count == 0:
             return
 
         try:
+            if not self._ensure_session():
+                return
             self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
             logger.info("OpenViking session %s committed (%d turns)", self._session_id, self._turn_count)
         except Exception as e:
@@ -443,6 +467,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         def _write():
             try:
                 client = _VikingClient(self._endpoint, self._api_key)
+                client.get(
+                    f"/api/v1/sessions/{self._session_id}",
+                    params={"auto_create": "true"},
+                )
                 # Add as a user message with memory context so the commit
                 # picks it up as an explicit memory during extraction
                 client.post(f"/api/v1/sessions/{self._session_id}/messages", {
@@ -454,8 +482,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("OpenViking memory mirror failed: %s", e)
 
-        t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
-        t.start()
+        if self._memwrite_thread and self._memwrite_thread.is_alive():
+            self._memwrite_thread.join(timeout=5.0)
+
+        self._memwrite_thread = threading.Thread(
+            target=_write, daemon=True, name="openviking-memwrite"
+        )
+        self._memwrite_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
@@ -596,6 +629,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         text = f"[Remember] {content}"
         if category:
             text = f"[Remember — {category}] {content}"
+
+        if not self._ensure_session():
+            return json.dumps({"error": "OpenViking session unavailable"})
 
         self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
             "role": "user",
