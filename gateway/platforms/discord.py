@@ -1379,6 +1379,68 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return await super().send_image(chat_id, image_url, caption, reply_to)
 
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an animated GIF natively as a Discord file attachment."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        if not is_safe_url(animation_url):
+            logger.warning("[%s] Blocked unsafe animation URL during Discord send_animation", self.name)
+            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+
+        try:
+            import aiohttp
+
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            # Download the GIF and send as a Discord file attachment
+            # (Discord renders .gif attachments as auto-playing animations inline)
+            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+            async with aiohttp.ClientSession(**_sess_kw) as session:
+                async with session.get(animation_url, timeout=aiohttp.ClientTimeout(total=30), **_req_kw) as resp:
+                    if resp.status != 200:
+                        raise Exception(f"Failed to download animation: HTTP {resp.status}")
+
+                    animation_data = await resp.read()
+
+                    import io
+                    file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
+
+                    msg = await channel.send(
+                        content=caption if caption else None,
+                        file=file,
+                    )
+                    return SendResult(success=True, message_id=str(msg.id))
+
+        except ImportError:
+            logger.warning(
+                "[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp",
+                self.name,
+                exc_info=True,
+            )
+            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send animation attachment, falling back to URL: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
+            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+
     async def send_video(
         self,
         chat_id: str,
@@ -1739,6 +1801,76 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
         async def slash_btw(interaction: discord.Interaction, question: str):
             await self._run_simple_slash(interaction, f"/btw {question}")
+
+        # ── Auto-register any gateway-available commands not yet on the tree ──
+        # This ensures new commands added to COMMAND_REGISTRY in
+        # hermes_cli/commands.py automatically appear as Discord slash
+        # commands without needing a manual entry here.
+        try:
+            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
+
+            already_registered = set()
+            try:
+                already_registered = {cmd.name for cmd in tree.get_commands()}
+            except Exception:
+                pass
+
+            config_overrides = _resolve_config_gates()
+
+            for cmd_def in COMMAND_REGISTRY:
+                if not _is_gateway_available(cmd_def, config_overrides):
+                    continue
+                # Discord command names: lowercase, hyphens OK, max 32 chars.
+                discord_name = cmd_def.name.lower()[:32]
+                if discord_name in already_registered:
+                    continue
+                # Skip aliases that overlap with already-registered names
+                # (aliases for explicitly registered commands are handled above).
+                desc = (cmd_def.description or f"Run /{cmd_def.name}")[:100]
+                has_args = bool(cmd_def.args_hint)
+
+                if has_args:
+                    # Command takes optional arguments — create handler with
+                    # an optional ``args`` string parameter.
+                    def _make_args_handler(_name: str, _hint: str):
+                        @discord.app_commands.describe(args=f"Arguments: {_hint}"[:100])
+                        async def _handler(interaction: discord.Interaction, args: str = ""):
+                            await self._run_simple_slash(
+                                interaction, f"/{_name} {args}".strip()
+                            )
+                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
+                        return _handler
+
+                    handler = _make_args_handler(cmd_def.name, cmd_def.args_hint)
+                else:
+                    # Parameterless command.
+                    def _make_simple_handler(_name: str):
+                        async def _handler(interaction: discord.Interaction):
+                            await self._run_simple_slash(interaction, f"/{_name}")
+                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
+                        return _handler
+
+                    handler = _make_simple_handler(cmd_def.name)
+
+                auto_cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=desc,
+                    callback=handler,
+                )
+                try:
+                    tree.add_command(auto_cmd)
+                    already_registered.add(discord_name)
+                except Exception:
+                    # Silently skip commands that fail registration (e.g.
+                    # name conflict with a subcommand group).
+                    pass
+
+            logger.debug(
+                "Discord auto-registered %d commands from COMMAND_REGISTRY",
+                len(already_registered),
+            )
+        except Exception as e:
+            logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
 
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,

@@ -5073,6 +5073,7 @@ Examples:
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
     hermes debug share --local      Print report locally (no upload)
+    hermes debug delete <url>       Delete a previously uploaded paste
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
@@ -5091,6 +5092,14 @@ Examples:
     share_parser.add_argument(
         "--local", action="store_true",
         help="Print the report locally instead of uploading",
+    )
+    delete_parser = debug_sub.add_parser(
+        "delete",
+        help="Delete a paste uploaded by 'hermes debug share'",
+    )
+    delete_parser.add_argument(
+        "urls", nargs="*", default=[],
+        help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
     debug_parser.set_defaults(func=cmd_debug)
 
@@ -6046,7 +6055,37 @@ Examples:
         sys.exit(1)
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
-    args = parser.parse_args(_processed_argv)
+
+    # ── Defensive subparser routing (bpo-9338 workaround) ───────────
+    # On some Python versions (notably <3.11), argparse fails to route
+    # subcommand tokens when the parent parser has nargs='?' optional
+    # arguments (--continue).  The symptom: "unrecognized arguments: model"
+    # even though 'model' is a registered subcommand.
+    #
+    # Fix: when argv contains a token matching a known subcommand, set
+    # subparsers.required=True to force deterministic routing.  If that
+    # fails (e.g. 'hermes -c model' where 'model' is consumed as the
+    # session name for --continue), fall back to the default behaviour.
+    import io as _io
+    _known_cmds = set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
+    _has_cmd_token = any(t in _known_cmds for t in _processed_argv if not t.startswith("-"))
+
+    if _has_cmd_token:
+        subparsers.required = True
+        _saved_stderr = sys.stderr
+        try:
+            sys.stderr = _io.StringIO()
+            args = parser.parse_args(_processed_argv)
+            sys.stderr = _saved_stderr
+        except SystemExit:
+            sys.stderr = _saved_stderr
+            # Subcommand name was consumed as a flag value (e.g. -c model).
+            # Fall back to optional subparsers so argparse handles it normally.
+            subparsers.required = False
+            args = parser.parse_args(_processed_argv)
+    else:
+        subparsers.required = False
+        args = parser.parse_args(_processed_argv)
 
     # Handle --version flag
     if args.version:
