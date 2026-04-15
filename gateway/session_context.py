@@ -36,7 +36,7 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 
 # ---------------------------------------------------------------------------
 # Per-task session variables
@@ -126,3 +126,15 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def run_in_executor_with_context(loop, func, *args):
+    """Run a callable in the default executor while preserving current ContextVars.
+
+    ``asyncio.run_in_executor`` does not propagate ``contextvars`` into worker
+    threads by itself. Gateway tool calls rely on session-scoped context such as
+    ``HERMES_SESSION_PLATFORM`` and ``HERMES_SESSION_CHAT_ID`` to register
+    background watchers and route follow-up notifications correctly.
+    """
+    ctx = copy_context()
+    return loop.run_in_executor(None, ctx.run, func, *args)

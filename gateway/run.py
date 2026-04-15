@@ -5390,7 +5390,8 @@ class GatewayRunner:
                 )
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            from gateway.session_context import run_in_executor_with_context
+            result = await run_in_executor_with_context(loop, run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -5573,7 +5574,8 @@ class GatewayRunner:
                 )
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            from gateway.session_context import run_in_executor_with_context
+            result = await run_in_executor_with_context(loop, run_sync)
 
             response = (result.get("final_response") or "") if result else ""
             if not response and result and result.get("error"):
@@ -8374,8 +8376,9 @@ class GatewayRunner:
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
             loop = asyncio.get_event_loop()
+            from gateway.session_context import run_in_executor_with_context
             _executor_task = asyncio.ensure_future(
-                loop.run_in_executor(None, run_sync)
+                run_in_executor_with_context(loop, run_sync)
             )
 
             _inactivity_timeout = False
