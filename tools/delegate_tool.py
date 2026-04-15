@@ -783,6 +783,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    max_duration: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -813,7 +814,7 @@ def delegate_task(
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
-    effective_max_duration = cfg.get("max_duration", DEFAULT_MAX_DURATION)
+    effective_max_duration = max_duration if max_duration is not None else cfg.get("max_duration", DEFAULT_MAX_DURATION)
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -1211,14 +1212,22 @@ DELEGATE_TASK_SCHEMA = {
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),
             },
-            "max_iterations": {
+           "max_iterations": {
+               "type": "integer",
+               "description": (
+                   "Max tool-calling turns per subagent (default: 50). "
+                   "Only set lower for simple tasks."
+               ),
+           },
+            "max_duration": {
                 "type": "integer",
                 "description": (
-                    "Max tool-calling turns per subagent (default: 50). "
-                    "Only set lower for simple tasks."
+                    "Max wall-clock seconds per subagent (default: 300 = 5 min). "
+                    "Set higher for long-running tasks like video production. "
+                    "Set 0 to disable timeout entirely."
                 ),
             },
-            "acp_command": {
+           "acp_command": {
                 "type": "string",
                 "description": (
                     "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
@@ -1254,6 +1263,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        max_duration=args.get("max_duration"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
