@@ -1891,12 +1891,12 @@ class TestCreateMatrixSession:
                 await session.close()
 
     @pytest.mark.asyncio
-    async def test_http_proxy_injects_into_request(self):
+    async def test_http_proxy_sets_default_proxy(self):
         with patch.dict("sys.modules", _make_fake_mautrix()):
             from gateway.platforms.matrix import _create_matrix_session
             session = _create_matrix_session("http://proxy:8080")
             try:
-                assert session._request is not type(session)._request
+                assert str(session._default_proxy) == "http://proxy:8080"
             finally:
                 await session.close()
 

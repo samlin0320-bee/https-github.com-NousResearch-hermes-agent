@@ -126,9 +126,9 @@ def _create_matrix_session(proxy_url: str | None):
     """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
 
     mautrix's ``HTTPAPI._send()`` calls ``session.request()`` without forwarding
-    per-request ``proxy=`` kwargs, so a plain ``proxy=`` dict won't work.
-    For HTTP(S) proxies we subclass ``ClientSession`` to inject it; for SOCKS
-    we use ``aiohttp_socks.ProxyConnector`` (connector-level, already global).
+    per-request ``proxy=`` kwargs.  For HTTP(S) proxies we use aiohttp's native
+    ``proxy=`` session parameter which sets a default for every request.  For SOCKS
+    we use ``aiohttp_socks.ProxyConnector`` (connector-level).
     When no proxy is configured we enable ``trust_env`` so standard env vars
     (``HTTP_PROXY`` / ``HTTPS_PROXY``) are honoured automatically.
     """
@@ -152,15 +152,7 @@ def _create_matrix_session(proxy_url: str | None):
             )
             return aiohttp.ClientSession(trust_env=True)
 
-    session = aiohttp.ClientSession()
-    _original_request = session._request
-
-    async def _proxied_request(*args, **kwargs):
-        kwargs.setdefault("proxy", proxy_url)
-        return await _original_request(*args, **kwargs)
-
-    session._request = _proxied_request  # type: ignore[method-assign]
-    return session
+    return aiohttp.ClientSession(proxy=proxy_url)
 
 
 def _check_e2ee_deps() -> bool:
@@ -431,9 +423,6 @@ class MatrixAdapter(BasePlatformAdapter):
         # Ensure store dir exists for E2EE key persistence.
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Create the HTTP API layer with proxy support.
-        # mautrix's HTTPAPI._send() calls session.request() without forwarding
-        # per-request proxy= kwargs, so we must apply the proxy at session level.
         import aiohttp as _aiohttp
         client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(
