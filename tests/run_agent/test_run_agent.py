@@ -668,6 +668,30 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_includes_timezone_when_configured(self, agent, monkeypatch):
+        """When hermes_time returns a ZoneInfo (explicit IANA config), the
+        prompt exposes the IANA name and UTC offset so the agent can answer
+        timezone questions directly rather than falling through to `date`."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        import hermes_time
+        fixed = datetime(2026, 4, 15, 2, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+        monkeypatch.setattr(hermes_time, "now", lambda: fixed)
+        prompt = agent._build_system_prompt()
+        assert "Timezone: Asia/Kolkata" in prompt
+        assert "UTC+05:30" in prompt
+
+    def test_omits_timezone_line_without_config(self, agent, monkeypatch):
+        """Server-local fallback (datetime.timezone, no `.key`) must not
+        emit a Timezone line — keeps byte-compat for unconfigured deployments."""
+        from datetime import datetime, timezone, timedelta
+        import hermes_time
+        # astimezone() fallback yields a datetime.timezone object, not ZoneInfo.
+        fixed = datetime(2026, 4, 15, 2, 30, tzinfo=timezone(timedelta(hours=8)))
+        monkeypatch.setattr(hermes_time, "now", lambda: fixed)
+        prompt = agent._build_system_prompt()
+        assert "Timezone:" not in prompt
+
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()

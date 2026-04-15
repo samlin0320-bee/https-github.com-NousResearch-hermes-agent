@@ -117,6 +117,23 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return None
 
 
+def _resolve_configured_tz_name() -> str | None:
+    """Return the configured IANA timezone name, or None on any failure.
+
+    Used by every terminal backend to inject ``TZ=<name>`` so ``date`` and
+    TZ-honouring runtimes inside the subprocess report wall-clock time in
+    the user's zone, agreeing with the timezone the agent sees in its
+    system prompt. Resolved via ``hermes_time.get_timezone()`` so config.yaml
+    setups are covered, not just the ``HERMES_TIMEZONE`` env var.
+    """
+    try:
+        from hermes_time import get_timezone
+        tz = get_timezone()
+        return tz.key if tz is not None else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # ProcessHandle protocol
 # ---------------------------------------------------------------------------
@@ -337,6 +354,16 @@ class BaseEnvironment(ABC):
         # Source snapshot (env vars from previous commands)
         if self._snapshot_ready:
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
+
+        # Set TZ from the user's configured timezone so `date` and TZ-honouring
+        # runtimes report wall-clock time in the user's zone, agreeing with what
+        # the agent sees in its system prompt. Centralizes TZ propagation across
+        # every BaseEnvironment-derived backend (local, docker, ssh, singularity,
+        # modal, daytona). Snapshot's later `export -p` will re-capture this so
+        # subsequent commands inherit it from the snapshot too.
+        _tz_name = _resolve_configured_tz_name()
+        if _tz_name:
+            parts.append(f"export TZ={shlex.quote(_tz_name)}")
 
         # cd to working directory — let bash expand ~ natively
         quoted_cwd = (

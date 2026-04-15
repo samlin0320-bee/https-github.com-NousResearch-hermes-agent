@@ -3253,6 +3253,17 @@ class AIAgent:
         from hermes_time import now as _hermes_now
         now = _hermes_now()
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        # Surface the configured IANA timezone so the agent can answer
+        # "what timezone am I in?" without falling through to `date`
+        # (which returns server-local, often UTC on VPS deployments).
+        # Only emitted when an explicit IANA ZoneInfo is in use — fallback
+        # `datetime.timezone` objects lack `.key` and are skipped, keeping
+        # server-local deployments byte-compatible with prior output.
+        _tz_key = getattr(now.tzinfo, "key", None)
+        if _tz_key:
+            _offset = now.strftime("%z")
+            _offset_fmt = f"UTC{_offset[:3]}:{_offset[3:]}" if _offset else ""
+            timestamp_line += f"\nTimezone: {_tz_key} ({_offset_fmt})"
         if self.pass_session_id and self.session_id:
             timestamp_line += f"\nSession ID: {self.session_id}"
         if self.model:
