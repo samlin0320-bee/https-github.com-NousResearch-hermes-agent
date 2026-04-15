@@ -459,12 +459,15 @@ class SessionManager:
             default_model = model_cfg.strip()
 
         delegated_enabled_toolsets = _parse_toolset_env("HERMES_ACP_ENABLED_TOOLSETS_JSON")
+        is_delegated_worker = delegated_enabled_toolsets is not None
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": delegated_enabled_toolsets if delegated_enabled_toolsets is not None else ["hermes-acp"],
+            "enabled_toolsets": delegated_enabled_toolsets if is_delegated_worker else ["hermes-acp"],
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,
+            "skip_context_files": is_delegated_worker,
+            "skip_memory": is_delegated_worker,
         }
 
         try:
