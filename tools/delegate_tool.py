@@ -154,7 +154,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
-        "delegation", "clarify", "memory", "code_execution",
+        "delegation", "clarify", "memory", "code_execution", "messaging",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
