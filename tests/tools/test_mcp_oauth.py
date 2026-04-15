@@ -169,6 +169,40 @@ class TestBuildOAuthAuth:
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
 
+    @pytest.mark.parametrize("server_url", ["", "localhost:8000", "ftp://example.com/mcp"])
+    def test_rejects_malformed_server_url_before_provider(self, tmp_path, monkeypatch, server_url):
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = MagicMock(side_effect=AssertionError("provider should not be constructed"))
+        monkeypatch.setattr(mod, "OAuthClientProvider", provider)
+
+        with pytest.raises(ValueError, match="absolute http\\(s\\) URL"):
+            build_oauth_auth("bad-server", server_url)
+
+        provider.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("server_url", "expected_base_url"),
+        [
+            ("http://localhost:8000/mcp", "http://localhost:8000"),
+            ("https://example.com/mcp?transport=streamable", "https://example.com"),
+        ],
+    )
+    def test_valid_server_url_preserves_origin_base_url(
+        self, tmp_path, monkeypatch, server_url, expected_base_url
+    ):
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = MagicMock(return_value=object())
+        monkeypatch.setattr(mod, "OAuthClientProvider", provider)
+
+        result = build_oauth_auth("valid-server", server_url)
+
+        assert result is provider.return_value
+        assert provider.call_args.kwargs["server_url"] == expected_base_url
+
 
 # ---------------------------------------------------------------------------
 # Utility functions
