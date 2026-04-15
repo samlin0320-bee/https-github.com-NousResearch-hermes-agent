@@ -101,6 +101,7 @@ AUTHOR_MAP = {
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",
+    "MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "chinmingcock@gmail.com": "ChimingLiu",
     "openclaw@sparklab.ai": "openclaw",
     "semihcvlk53@gmail.com": "Himess",
