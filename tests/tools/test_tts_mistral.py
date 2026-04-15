@@ -243,3 +243,21 @@ class TestMistralTtsOpus:
         assert "[[audio_as_voice]]" in result["media_tag"]
         call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
         assert call_kwargs["response_format"] == "opus"
+
+    def test_default_output_uses_isolated_hermes_home(
+        self, tmp_path, mock_mistral_module, monkeypatch
+    ):
+        import json
+
+        from tools.tts_tool import text_to_speech_tool
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
+            audio_data=base64.b64encode(b"opus-audio").decode()
+        )
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
+            result = json.loads(text_to_speech_tool("Hello"))
+
+        assert result["success"] is True
+        assert str(tmp_path / "hermes_test") in result["file_path"]
