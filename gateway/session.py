@@ -813,7 +813,15 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
-                if not entry.suspended and entry.updated_at >= cutoff:
+                if entry.suspended or entry.updated_at is None:
+                    continue
+                # Normalize tz to match _now()'s awareness
+                entry_ts = entry.updated_at
+                if entry_ts.tzinfo is None and cutoff.tzinfo is not None:
+                    entry_ts = entry_ts.replace(tzinfo=cutoff.tzinfo)
+                elif entry_ts.tzinfo is not None and cutoff.tzinfo is None:
+                    entry_ts = entry_ts.replace(tzinfo=None)
+                if entry_ts >= cutoff:
                     entry.suspended = True
                     count += 1
             if count:
