@@ -535,6 +535,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 await api.session.close()
                 return False
 
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(self)
+        except ImportError:
+            pass
+
         # Register event handlers.
         from mautrix.client import InternalEventType as IntEvt
 
@@ -595,12 +601,22 @@ class MatrixAdapter(BasePlatformAdapter):
         """Disconnect from Matrix."""
         self._closing = True
 
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(None)
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.warning("Matrix: failed to clear tool adapter binding during disconnect: %s", exc)
+
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
                 await self._sync_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                logger.warning("Matrix: sync task raised during disconnect: %s", exc)
 
         # Close the SQLite crypto store database.
         if hasattr(self, "_crypto_db") and self._crypto_db:
@@ -1446,6 +1462,10 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
             return None
+
+    async def send_reaction(self, room_id: str, event_id: str, emoji: str) -> Optional[str]:
+        """Public wrapper for sending an emoji reaction to a Matrix event."""
+        return await self._send_reaction(room_id, event_id, emoji)
 
     async def _redact_reaction(
         self, room_id: str, reaction_event_id: str, reason: str = "",
