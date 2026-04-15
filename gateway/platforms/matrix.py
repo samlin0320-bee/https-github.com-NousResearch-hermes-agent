@@ -122,6 +122,47 @@ _E2EE_INSTALL_HINT = (
 )
 
 
+def _create_matrix_session(proxy_url: str | None):
+    """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
+
+    mautrix's ``HTTPAPI._send()`` calls ``session.request()`` without forwarding
+    per-request ``proxy=`` kwargs, so a plain ``proxy=`` dict won't work.
+    For HTTP(S) proxies we subclass ``ClientSession`` to inject it; for SOCKS
+    we use ``aiohttp_socks.ProxyConnector`` (connector-level, already global).
+    When no proxy is configured we enable ``trust_env`` so standard env vars
+    (``HTTP_PROXY`` / ``HTTPS_PROXY``) are honoured automatically.
+    """
+    import aiohttp
+
+    if not proxy_url:
+        return aiohttp.ClientSession(trust_env=True)
+
+    if proxy_url.split("://")[0].lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            return aiohttp.ClientSession(
+                connector=ProxyConnector.from_url(proxy_url, rdns=True),
+            )
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return aiohttp.ClientSession(trust_env=True)
+
+    session = aiohttp.ClientSession()
+    _original_request = session._request
+
+    async def _proxied_request(*args, **kwargs):
+        kwargs.setdefault("proxy", proxy_url)
+        return await _original_request(*args, **kwargs)
+
+    session._request = _proxied_request  # type: ignore[method-assign]
+    return session
+
+
 def _check_e2ee_deps() -> bool:
     """Return True if mautrix E2EE dependencies (python-olm) are available."""
     try:
@@ -264,6 +305,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Proxy support — resolve once at init, reuse for all HTTP traffic.
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
+        if self._proxy_url:
+            logger.info("Matrix: proxy configured — %s", self._proxy_url)
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # Matrix clients split long messages around 4000 chars.
@@ -389,9 +432,10 @@ class MatrixAdapter(BasePlatformAdapter):
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
         # Create the HTTP API layer with proxy support.
+        # mautrix's HTTPAPI._send() calls session.request() without forwarding
+        # per-request proxy= kwargs, so we must apply the proxy at session level.
         import aiohttp as _aiohttp
-        _sess_kw, _ = proxy_kwargs_for_aiohttp(self._proxy_url)
-        client_session = _aiohttp.ClientSession(**_sess_kw)
+        client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(
             base_url=self._homeserver,
             token=self._access_token or "",
