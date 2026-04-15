@@ -5689,7 +5689,8 @@ class GatewayRunner:
                 )
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            from gateway.session_context import run_in_executor_with_context
+            result = await run_in_executor_with_context(loop, run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -5872,7 +5873,8 @@ class GatewayRunner:
                 )
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            from gateway.session_context import run_in_executor_with_context
+            result = await run_in_executor_with_context(loop, run_sync)
 
             response = (result.get("final_response") or "") if result else ""
             if not response and result and result.get("error"):
@@ -7536,7 +7538,7 @@ class GatewayRunner:
 
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
-                # Skip if the agent already consumed the result via wait/poll/log
+                # Skip if the agent already consumed the result via wait/log.
                 from tools.process_registry import process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
@@ -8965,8 +8967,9 @@ class GatewayRunner:
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
             loop = asyncio.get_event_loop()
+            from gateway.session_context import run_in_executor_with_context
             _executor_task = asyncio.ensure_future(
-                loop.run_in_executor(None, run_sync)
+                run_in_executor_with_context(loop, run_sync)
             )
 
             _inactivity_timeout = False
