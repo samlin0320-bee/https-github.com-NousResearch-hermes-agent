@@ -190,7 +190,7 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") == ""
 
 
-def test_set_session_env_includes_session_key():
+def test_set_session_env_includes_session_key(monkeypatch):
     """_set_session_env should propagate session_key from SessionContext."""
     runner = object.__new__(GatewayRunner)
     source = SessionSource(
@@ -207,13 +207,11 @@ def test_set_session_env_includes_session_key():
         session_key="tg:-1001:17585",
     )
 
-    # Capture baseline value before setting (may be non-empty from another
-    # test in the same pytest-xdist worker sharing the context).
-    baseline = get_session_env("HERMES_SESSION_KEY")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
     runner._clear_session_env(tokens)
-    assert get_session_env("HERMES_SESSION_KEY") == baseline
+    assert get_session_env("HERMES_SESSION_KEY") == ""
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
