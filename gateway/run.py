@@ -3257,13 +3257,17 @@ class GatewayRunner:
         history = history or []
         message_text = event.text or ""
 
-        _is_shared_thread = (
+        _needs_sender_prefix = (
             source.chat_type != "dm"
-            and source.thread_id
-            and not getattr(self.config, "thread_sessions_per_user", False)
+            and (
+                source.chat_type == "group"
+                or (source.thread_id and not getattr(self.config, "thread_sessions_per_user", False))
+            )
         )
-        if _is_shared_thread and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+        if _needs_sender_prefix:
+            _sender_label = source.user_name or source.user_id
+            if _sender_label:
+                message_text = f"[{_sender_label}] {message_text}"
 
         if event.media_urls:
             image_paths = []

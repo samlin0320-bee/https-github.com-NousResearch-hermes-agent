@@ -331,13 +331,18 @@ class TestBuildSessionContextPrompt:
         ctx = build_session_context(source, config)
         prompt = build_session_context_prompt(ctx)
 
-        assert "Multi-user thread" in prompt
+        assert "Multi-user conversation" in prompt
         assert "[sender name]" in prompt
         # Should NOT show a specific **User:** line (would bust cache)
         assert "**User:** Alice" not in prompt
 
-    def test_non_thread_group_shows_user(self):
-        """Regular group messages (no thread) still show the user name."""
+    def test_non_thread_group_shows_multi_user(self):
+        """Regular group messages (no thread) show multi-user annotation.
+
+        Group chats may have multiple participants even without threads.
+        The gateway prefixes each message with [sender name], so the
+        prompt must inform the model about that convention.
+        """
         config = GatewayConfig(
             platforms={
                 Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
@@ -353,8 +358,11 @@ class TestBuildSessionContextPrompt:
         ctx = build_session_context(source, config)
         prompt = build_session_context_prompt(ctx)
 
-        assert "**User:** Alice" in prompt
-        assert "Multi-user thread" not in prompt
+        assert "Multi-user conversation" in prompt
+        assert "[sender name]" in prompt
+        # Individual user name should NOT be pinned in the system prompt
+        # for multi-user contexts — it changes per-turn.
+        assert "**User:** Alice" not in prompt
 
     def test_dm_thread_shows_user_not_multi(self):
         """DM threads are single-user and should show User, not multi-user note."""
@@ -374,7 +382,38 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "**User:** Alice" in prompt
-        assert "Multi-user thread" not in prompt
+        assert "Multi-user conversation" not in prompt
+
+    def test_feishu_group_no_thread_shows_multi_user(self):
+        """Feishu group chats (no thread_id) must show multi-user annotation.
+
+        Regression test for: Feishu group messages had no [sender name]
+        prefix because the condition required thread_id (which is None
+        for regular Feishu groups). This caused the bot to misidentify
+        speakers when SOUL.md references a specific user.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        # Simulate two different users in the same Feishu group
+        for user_name in ("Alice", "Bob"):
+            source = SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_test_group_chat_id",
+                chat_name="Test Group",
+                chat_type="group",
+                user_name=user_name,
+                # thread_id is None for regular Feishu group chats
+            )
+            ctx = build_session_context(source, config)
+            prompt = build_session_context_prompt(ctx)
+
+            assert "Multi-user conversation" in prompt
+            assert "[sender name]" in prompt
+            # Individual user name should NOT be pinned in system prompt
+            assert f"**User:** {user_name}" not in prompt
 
 
 class TestSessionStoreRewriteTranscript:

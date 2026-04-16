@@ -244,13 +244,13 @@ def build_session_context_prompt(
     # in the system prompt — it changes per-turn and would bust the prompt
     # cache.  Instead, note that this is a multi-user thread; individual
     # sender names are prefixed on each user message by the gateway.
-    _is_shared_thread = (
+    _is_multi_user = (
         context.source.chat_type != "dm"
-        and context.source.thread_id
+        and (context.source.chat_type == "group" or context.source.thread_id)
     )
-    if _is_shared_thread:
+    if _is_multi_user:
         lines.append(
-            "**Session type:** Multi-user thread — messages are prefixed "
+            "**Session type:** Multi-user conversation — messages are prefixed "
             "with [sender name]. Multiple users may participate."
         )
     elif context.source.user_name:
