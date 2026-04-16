@@ -215,6 +215,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("script_skip_if_empty"):
+        result["script_skip_if_empty"] = True
     return result
 
 
@@ -234,6 +236,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    script_skip_if_empty: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -271,6 +274,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                script_skip_if_empty=bool(script_skip_if_empty),
             )
             return json.dumps(
                 {
@@ -360,6 +364,8 @@ def cronjob(
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+            if script_skip_if_empty is not None:
+                updates["script_skip_if_empty"] = bool(script_skip_if_empty)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -459,6 +465,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
             },
+            "script_skip_if_empty": {
+                "type": "boolean",
+                "description": "Optional. When true, if the pre-run script succeeds but produces empty stdout, skip the LLM run entirely and suppress delivery. On update, pass false to disable."
+            },
         },
         "required": ["action"]
     }
@@ -503,6 +513,7 @@ registry.register(
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
+        script_skip_if_empty=args.get("script_skip_if_empty"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
