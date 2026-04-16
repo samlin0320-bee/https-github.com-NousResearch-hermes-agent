@@ -612,7 +612,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
     assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
-    assert resolved["api_key"] == "no-key-required"
+    assert resolved["api_key"] == "dir-key"
     assert resolved["requested_provider"] == "openai-direct-primary"
     assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
     assert resolved["model"] == "gpt-5-mini"
