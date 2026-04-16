@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    LIVEKIT = "livekit"
 
 
 @dataclass
@@ -306,6 +307,9 @@ class GatewayConfig:
                 connected.append(platform)
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
+                connected.append(platform)
+            # LiveKit uses extra dict for server URL + API credentials
+            elif platform == Platform.LIVEKIT and config.extra.get("url"):
                 connected.append(platform)
         return connected
     
@@ -1161,6 +1165,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # LiveKit
+    livekit_url = os.getenv("LIVEKIT_URL")
+    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+    if livekit_url and livekit_api_key and livekit_api_secret:
+        if Platform.LIVEKIT not in config.platforms:
+            config.platforms[Platform.LIVEKIT] = PlatformConfig()
+        config.platforms[Platform.LIVEKIT].enabled = True
+        config.platforms[Platform.LIVEKIT].extra.update({
+            "url": livekit_url,
+            "api_key": livekit_api_key,
+            "api_secret": livekit_api_secret,
+            "room": os.getenv("LIVEKIT_ROOM", "hermes"),
+            "agent_name": os.getenv("LIVEKIT_AGENT_NAME", "Hermes"),
+            "agent_avatar": os.getenv("LIVEKIT_AGENT_AVATAR", ""),
+        })
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

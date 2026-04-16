@@ -205,6 +205,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
+        "livekit": Platform.LIVEKIT,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -516,6 +517,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.LIVEKIT:
+            result = {"error": "LiveKit is a real-time voice channel — use voice replies instead of send_message."}
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
