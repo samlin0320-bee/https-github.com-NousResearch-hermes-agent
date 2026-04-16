@@ -455,6 +455,16 @@ class TestValidateApiNotFound:
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
+    def test_static_list_trusted_when_api_is_incomplete(self):
+        """If the live API omits a model we curate statically, trust the static list."""
+        # Simulate Kimi Coding Plan's /models endpoint, which only exposes
+        # kimi-for-coding even though newer models like k2.6-code-preview work.
+        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-for-coding"]):
+            result = validate_requested_model("k2.6-code-preview", "kimi-coding")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
 
 # -- validate — API unreachable — accept and persist everything ----------------
 
