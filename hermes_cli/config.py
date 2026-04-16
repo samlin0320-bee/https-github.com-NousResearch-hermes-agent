@@ -390,6 +390,15 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # Browser engine for local mode.  Passed as ``--engine <value>`` to
+        # agent-browser v0.25.3+.
+        # "auto"       — use Chrome (default, don't pass --engine at all)
+        # "lightpanda" — use Lightpanda (1.3–5.8× faster navigation, no screenshots)
+        # "chrome"     — explicitly request Chrome
+        # Lightpanda fallback: if lightpanda returns empty/broken results the
+        # command is automatically retried with Chrome.
+        # Also settable via AGENT_BROWSER_ENGINE env var.
+        "engine": "auto",
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server can map it to a persistent browser profile directory.
@@ -1124,6 +1133,15 @@ OPTIONAL_ENV_VARS = {
         "tools": ["browser_navigate", "browser_click"],
         "password": True,
         "category": "tool",
+    },
+    "AGENT_BROWSER_ENGINE": {
+        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
+        "prompt": "Browser engine (auto/lightpanda/chrome)",
+        "url": "https://github.com/vercel-labs/agent-browser",
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "FIRECRAWL_BROWSER_TTL": {
         "description": "Firecrawl browser session TTL in seconds (optional, default 300)",

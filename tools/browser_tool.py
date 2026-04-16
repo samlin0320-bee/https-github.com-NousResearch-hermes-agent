@@ -286,6 +286,11 @@ _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
+# Lightpanda engine support — cached like _get_cloud_provider().
+# agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
+_cached_browser_engine: Optional[str] = None
+_browser_engine_resolved = False
+
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
@@ -390,6 +395,182 @@ def _allow_private_urls() -> bool:
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
     return _cached_allow_private_urls
+
+
+def _get_browser_engine() -> str:
+    """Return the configured browser engine (``auto``, ``lightpanda``, or ``chrome``).
+
+    Reads ``config["browser"]["engine"]`` once and caches the result.
+    Falls back to the ``AGENT_BROWSER_ENGINE`` env var, then ``auto``.
+
+    ``auto`` means: don't pass ``--engine`` at all (agent-browser defaults to
+    Chrome).  ``lightpanda`` or ``chrome`` are forwarded as
+    ``--engine <value>`` to agent-browser v0.25.3+.
+
+    Lightpanda is 1.3–5.8× faster on navigation but returns placeholder PNGs
+    for screenshots (no graphical rendering engine).
+    """
+    global _cached_browser_engine, _browser_engine_resolved
+    if _browser_engine_resolved:
+        return _cached_browser_engine
+
+    _browser_engine_resolved = True
+    _cached_browser_engine = "auto"  # safe default
+
+    # Config file takes priority
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("engine")
+        if val and str(val).strip():
+            _cached_browser_engine = str(val).strip().lower()
+    except Exception as e:
+        logger.debug("Could not read browser.engine from config: %s", e)
+
+    # Fall back to env var (only if config didn't set a value)
+    if _cached_browser_engine == "auto":
+        env_val = os.environ.get("AGENT_BROWSER_ENGINE", "").strip().lower()
+        if env_val:
+            _cached_browser_engine = env_val
+
+    # Validate: agent-browser only accepts "chrome" and "lightpanda".
+    _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
+    if _cached_browser_engine not in _VALID_ENGINES:
+        logger.warning(
+            "Unknown browser engine %r (valid: %s), falling back to 'auto'",
+            _cached_browser_engine, ", ".join(sorted(_VALID_ENGINES)),
+        )
+        _cached_browser_engine = "auto"
+
+    return _cached_browser_engine
+
+
+def _should_inject_engine(engine: str) -> bool:
+    """Return True when the engine flag should be added to agent-browser commands.
+
+    Only inject ``--engine`` for non-cloud, non-camofox local sessions where
+    the engine is explicitly set (not ``auto``).
+    """
+    if engine == "auto":
+        return False
+    if _is_camofox_mode():
+        return False
+    return _is_local_mode()
+
+
+def _needs_lightpanda_fallback(engine: str, command: str, result: Dict[str, Any]) -> bool:
+    """Check if a Lightpanda result should trigger an automatic Chrome fallback.
+
+    Returns True when:
+    - The engine is lightpanda AND
+    - The command failed, OR
+    - A snapshot came back empty/suspiciously short, OR
+    - A screenshot returned but is likely the Lightpanda placeholder PNG
+    """
+    if engine != "lightpanda":
+        return False
+
+    # Explicit failure
+    if not result.get("success"):
+        return True
+
+    data = result.get("data", {})
+
+    if command == "snapshot":
+        snap = data.get("snapshot", "")
+        # Empty or near-empty snapshots indicate Lightpanda couldn't render
+        if not snap or len(snap.strip()) < 20:
+            return True
+
+    if command == "screenshot":
+        # Lightpanda returns a placeholder PNG with its panda logo.
+        # Since LP PR #1766 resized it to 1920x1080, the placeholder is
+        # ~17 KB.  Real Chromium screenshots are typically 100 KB+.
+        path = data.get("path", "")
+        if path:
+            try:
+                size = os.path.getsize(path)
+                # Real screenshots are typically 100 KB+; Lightpanda placeholder is ~17 KB
+                if size < 20480:
+                    logger.debug("Lightpanda screenshot is suspiciously small (%d bytes), "
+                                 "triggering Chrome fallback", size)
+                    return True
+            except OSError:
+                return True  # file doesn't exist or can't be read
+
+    return False
+
+
+def _chrome_fallback_screenshot(
+    task_id: str,
+    args: List[str],
+    timeout: int,
+) -> Dict[str, Any]:
+    """Take a screenshot using a temporary Chrome session.
+
+    When the active session uses Lightpanda, ``--engine chrome`` on the same
+    session has no effect — the engine is locked at daemon startup.  This
+    helper spins up a **separate** Chrome session, navigates to the same URL
+    the agent is currently viewing, takes the screenshot, then tears down the
+    temporary session.
+
+    Returns the screenshot result dict (same shape as ``_run_browser_command``).
+    """
+    import uuid
+
+    # 1. Grab the current URL from the Lightpanda session.
+    url_result = _run_browser_command(task_id, "eval", ["window.location.href"], timeout=10)
+    current_url = None
+    if url_result.get("success"):
+        current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
+    if not current_url:
+        logger.warning("Chrome fallback: could not determine current URL from LP session")
+        return {"success": False, "error": "Chrome fallback failed: could not determine current URL"}
+
+    # 2. Create a temporary Chrome session (bypasses _get_session_info's cache).
+    tmp_session = f"h_cfb_{uuid.uuid4().hex[:8]}"
+    try:
+        browser_cmd = _find_agent_browser()
+    except FileNotFoundError as e:
+        return {"success": False, "error": str(e)}
+
+    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
+
+    task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
+    os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+    browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+
+    def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
+        full = base_args + [cmd] + cmd_args
+        try:
+            proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout, env=browser_env)
+            if proc.stdout.strip():
+                return json.loads(proc.stdout.strip().split("\n")[-1])
+        except Exception as exc:
+            logger.debug("Chrome fallback tmp cmd '%s' error: %s", cmd, exc)
+        return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
+
+    try:
+        # 3. Navigate Chrome to the same URL.
+        nav = _run_tmp("open", [current_url])
+        if not nav.get("success"):
+            logger.warning("Chrome fallback: navigate failed: %s", nav.get("error"))
+            return {"success": False, "error": f"Chrome fallback navigate failed: {nav.get('error')}"}
+
+        # 4. Take the screenshot.
+        result = _run_tmp("screenshot", args)
+        return result
+
+    finally:
+        # 5. Tear down the temporary Chrome session.
+        try:
+            _run_tmp("close", [])
+        except Exception:
+            pass
+        # Clean up socket directory
+        import shutil
+        shutil.rmtree(task_socket_dir, ignore_errors=True)
 
 
 def _socket_safe_tmpdir() -> str:
@@ -1048,7 +1229,15 @@ def _run_browser_command(
     # Only the synthetic npx fallback needs to expand into multiple argv items.
     cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
 
-    cmd_parts = cmd_prefix + backend_args + [
+    # Engine selection — inject ``--engine <engine>`` for local mode when
+    # explicitly configured (Lightpanda or Chrome).  Cloud/CDP/Camofox modes
+    # ignore this since the engine is decided by the remote provider.
+    effective_engine = _get_browser_engine()
+    engine_args: List[str] = []
+    if _should_inject_engine(effective_engine):
+        engine_args = ["--engine", effective_engine]
+
+    cmd_parts = cmd_prefix + engine_args + backend_args + [
         "--json",
         command
     ] + args
@@ -1139,9 +1328,10 @@ def _run_browser_command(
                         logger.warning("snapshot returned empty content. "
                                        "Possible stale daemon or CDP connection issue. "
                                        "returncode=%s", returncode)
-                return parsed
+                result = parsed
             except json.JSONDecodeError:
                 raw = stdout_text[:2000]
+                non_json_error = f"Non-JSON output from agent-browser for '{command}': {raw}"
                 logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
                                command, returncode, raw[:500])
 
@@ -1157,30 +1347,57 @@ def _run_browser_command(
                             "browser 'screenshot' recovered file from non-JSON output: %s",
                             recovered_path,
                         )
-                        return {
+                        result = {
                             "success": True,
                             "data": {
                                 "path": recovered_path,
                                 "raw": raw,
                             },
                         }
-
-                return {
-                    "success": False,
-                    "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
-                }
-        
-        # Check for errors
-        if returncode != 0:
+                    else:
+                        result = {
+                            "success": False,
+                            "error": non_json_error,
+                        }
+                else:
+                    result = {"success": False, "error": non_json_error}
+        elif returncode != 0:
+            # Check for errors (no stdout)
             error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
             logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-            return {"success": False, "error": error_msg}
-        
-        return {"success": True, "data": {}}
+            result = {"success": False, "error": error_msg}
+        else:
+            result = {"success": True, "data": {}}
         
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
-        return {"success": False, "error": str(e)}
+        result = {"success": False, "error": str(e)}
+
+    # ── Lightpanda → Chrome automatic fallback ──────────────────────────
+    # If the engine was lightpanda and the result looks empty/broken,
+    # transparently retry with Chrome.  We can't just pass
+    # ``--engine chrome`` on the same session — the engine is locked at
+    # daemon startup.  Instead, spin up a temporary Chrome session for
+    # screenshot commands, or retry the original command for non-screenshot
+    # failures (e.g. empty snapshots).
+    if (_needs_lightpanda_fallback(effective_engine, command, result)):
+        logger.warning(
+            "Lightpanda fallback: '%s' produced unusable result, retrying with Chrome "
+            "(success=%s, data_keys=%s)",
+            command, result.get("success"),
+            list(result.get("data", {}).keys()) if isinstance(result.get("data"), dict) else "N/A",
+        )
+        if command == "screenshot":
+            # Screenshots need a separate Chrome session (engine is per-session)
+            fallback_result = _chrome_fallback_screenshot(task_id, args, timeout)
+        else:
+            # For non-screenshot commands (e.g. empty snapshot), we can't
+            # switch engines mid-session.  Log and return the original result.
+            fallback_result = result
+        fallback_result["_lightpanda_fallback"] = True
+        return fallback_result
+
+    return result
 
 
 def _extract_relevant_content(
@@ -1784,6 +2001,11 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _maybe_start_recording(task_id: str):
     """Start recording if browser.record_sessions is enabled in config."""
+    # Lightpanda has no graphical renderer — video recording is impossible.
+    engine = _get_browser_engine()
+    if engine == "lightpanda" and _should_inject_engine("lightpanda"):
+        return
+
     with _cleanup_lock:
         if task_id in _recording_sessions:
             return
@@ -1931,17 +2153,36 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Prune old screenshots (older than 24 hours) to prevent unbounded disk growth
         _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
         
-        # Take screenshot using agent-browser
-        screenshot_args = []
-        if annotate:
-            screenshot_args.append("--annotate")
-        screenshot_args.append("--full")
-        screenshot_args.append(str(screenshot_path))
-        result = _run_browser_command(
-            effective_task_id, 
-            "screenshot", 
-            screenshot_args,
-        )
+        # Take screenshot using agent-browser.
+        # Lightpanda has no graphical renderer — screenshots are always a
+        # placeholder PNG.  Since the engine is locked per-session, we can't
+        # just pass ``--engine chrome`` on the same session.  Instead, use
+        # ``_chrome_fallback_screenshot`` which spins up a temporary Chrome
+        # session, navigates to the same URL, and takes a real screenshot.
+        if _get_browser_engine() == "lightpanda" and _should_inject_engine("lightpanda"):
+            logger.debug("browser_vision: routing screenshot through temporary Chrome "
+                         "session (Lightpanda has no graphical renderer)")
+            screenshot_args = []
+            if annotate:
+                screenshot_args.append("--annotate")
+            screenshot_args.append("--full")
+            screenshot_args.append(str(screenshot_path))
+            result = _chrome_fallback_screenshot(
+                effective_task_id,
+                screenshot_args,
+                timeout=_get_command_timeout(),
+            )
+        else:
+            screenshot_args = []
+            if annotate:
+                screenshot_args.append("--annotate")
+            screenshot_args.append("--full")
+            screenshot_args.append(str(screenshot_path))
+            result = _run_browser_command(
+                effective_task_id,
+                "screenshot",
+                screenshot_args,
+            )
         
         if not result.get("success"):
             error_detail = result.get("error", "Unknown error")
