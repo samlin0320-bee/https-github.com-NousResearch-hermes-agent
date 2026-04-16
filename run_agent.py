@@ -560,7 +560,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 4000,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -617,7 +617,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 90)
+            max_iterations (int): Maximum number of tool calling iterations (default: 4000)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -1220,7 +1220,8 @@ class AIAgent:
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                     )
-                    self._memory_store.load_from_disk()
+                    tier_enabled = mem_config.get("memory_tier_enabled", True)
+                    self._memory_store.load_from_disk(tier_enabled=tier_enabled)
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
@@ -11325,7 +11326,7 @@ def main(
     model: str = "",
     api_key: str = None,
     base_url: str = "",
-    max_turns: int = 10,
+    max_turns: int = 4000,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
@@ -11342,7 +11343,7 @@ def main(
         model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
-        max_turns (int): Maximum number of API call iterations. Defaults to 10.
+        max_turns (int): Maximum number of API call iterations. Defaults to 4000.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"
