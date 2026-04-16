@@ -101,6 +101,7 @@ AUTHOR_MAP = {
     "camilo@tekelala.com": "tekelala",
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
+    "1569339843@qq.com": "kuishou68",
     "johnsonblake1@gmail.com": "blakejohnson",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
