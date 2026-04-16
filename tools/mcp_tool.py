@@ -1062,6 +1062,11 @@ class MCPServerTask:
                     await self._run_stdio(config)
                 # Normal exit (shutdown requested) -- break out
                 break
+            except asyncio.CancelledError:
+                # Task was cancelled — expected during shutdown/cancel.
+                # Do NOT treat as a connection failure.
+                self.session = None
+                return
             except Exception as exc:
                 self.session = None
 
