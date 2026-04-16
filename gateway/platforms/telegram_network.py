@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import socket
 from typing import Iterable, Optional
 
@@ -47,7 +46,7 @@ _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 def _resolve_proxy_url() -> str | None:
     # Delegate to shared implementation (env vars + macOS system proxy detection)
     from gateway.platforms.base import resolve_proxy_url
-    return resolve_proxy_url()
+    return resolve_proxy_url("TELEGRAM_PROXY")
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
@@ -110,7 +109,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
                 continue
 
-        assert last_error is not None
+        if last_error is None:
+            raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
 
     async def aclose(self) -> None:

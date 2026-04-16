@@ -1587,6 +1587,61 @@ class TestFallbackPreservesThreadContext:
 
 
 # ---------------------------------------------------------------------------
+# TestSendImageSSRFGuards
+# ---------------------------------------------------------------------------
+
+class TestSendImageSSRFGuards:
+    """send_image should reject redirects that land on private/internal hosts."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_blocks_private_redirect_target(self, adapter):
+        redirect_response = MagicMock()
+        redirect_response.is_redirect = True
+        redirect_response.next_request = MagicMock(
+            url="http://169.254.169.254/latest/meta-data"
+        )
+
+        client_kwargs = {}
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_get(_url):
+            for hook in client_kwargs["event_hooks"]["response"]:
+                await hook(redirect_response)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        def fake_async_client(*args, **kwargs):
+            client_kwargs.update(kwargs)
+            return mock_client
+
+        def fake_is_safe_url(url):
+            return url == "https://public.example/image.png"
+
+        with (
+            patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
+            patch("httpx.AsyncClient", side_effect=fake_async_client),
+        ):
+            result = await adapter.send_image(
+                chat_id="C123",
+                image_url="https://public.example/image.png",
+                caption="see this",
+            )
+
+        assert result.success
+        assert client_kwargs["follow_redirects"] is True
+        assert client_kwargs["event_hooks"]["response"]
+        adapter._app.client.files_upload_v2.assert_not_awaited()
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "see this" in call_kwargs["text"]
+        assert "https://public.example/image.png" in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
 # TestProgressMessageThread
 # ---------------------------------------------------------------------------
 
@@ -1623,11 +1678,11 @@ class TestProgressMessageThread:
         msg_event = captured_events[0]
         source = msg_event.source
 
-        # For a top-level DM: source.thread_id should remain None
-        # (session keying must not be affected)
-        assert source.thread_id is None, (
-            "source.thread_id must stay None for top-level DMs "
-            "so they share one continuous session"
+        # With default dm_top_level_threads_as_sessions=True, source.thread_id
+        # should equal the message ts so each DM thread gets its own session.
+        assert source.thread_id == "1234567890.000001", (
+            "source.thread_id must equal the message ts for top-level DMs "
+            "so each reply thread gets its own session"
         )
 
         # The message_id should be the event's ts — this is what the gateway
@@ -1650,6 +1705,34 @@ class TestProgressMessageThread:
         assert call_kwargs.get("thread_ts") == "1234567890.000001", (
             "send() must pass thread_ts when metadata has thread_id, "
             "ensuring progress messages land in the thread"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dm_toplevel_shares_session_when_disabled(self, adapter):
+        """Opting out restores legacy single-session-per-DM-channel behavior."""
+        adapter.config.extra["dm_top_level_threads_as_sessions"] = False
+
+        event = {
+            "channel": "D_DM",
+            "channel_type": "im",
+            "user": "U_USER",
+            "text": "Hello bot",
+            "ts": "1234567890.000001",
+        }
+
+        captured_events = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured_events) == 1
+        msg_event = captured_events[0]
+        source = msg_event.source
+
+        assert source.thread_id is None, (
+            "source.thread_id must stay None when "
+            "dm_top_level_threads_as_sessions is disabled"
         )
 
     @pytest.mark.asyncio
