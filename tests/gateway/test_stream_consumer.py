@@ -155,6 +155,90 @@ class TestSendOrEditMediaStripping:
 
         adapter.send.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_short_text_with_cursor_skips_new_message(self):
+        """Short text + cursor should not create a standalone new message.
+
+        During rapid tool-calling the model often emits 1-2 tokens before
+        switching to tool calls.  Sending 'I ▉' as a new message risks
+        leaving the cursor permanently visible if the follow-up edit is
+        rate-limited.  The guard should skip the first send and let the
+        text accumulate into the next segment.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        # No message_id yet (first send) — short text + cursor should be skipped
+        assert consumer._message_id is None
+        result = await consumer._send_or_edit("I ▉")
+        assert result is True
+        adapter.send.assert_not_called()
+
+        # 3 chars is still under the threshold
+        result = await consumer._send_or_edit("Hi! ▉")
+        assert result is True
+        adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_longer_text_with_cursor_sends_new_message(self):
+        """Text >= 4 visible chars + cursor should create a new message normally."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        result = await consumer._send_or_edit("Hello ▉")
+        assert result is True
+        adapter.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_short_text_without_cursor_sends_normally(self):
+        """Short text without cursor (e.g. final edit) should send normally."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        # No cursor in text — even short text should be sent
+        result = await consumer._send_or_edit("OK")
+        assert result is True
+        adapter.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_short_text_cursor_edit_existing_message_allowed(self):
+        """Short text + cursor editing an existing message should proceed."""
+        adapter = MagicMock()
+        edit_result = SimpleNamespace(success=True)
+        adapter.edit_message = AsyncMock(return_value=edit_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        consumer._message_id = "msg_1"  # Existing message — guard should not fire
+        consumer._last_sent_text = ""
+        result = await consumer._send_or_edit("I ▉")
+        assert result is True
+        adapter.edit_message.assert_called_once()
+
 
 # ── Integration: full stream run ─────────────────────────────────────────
 
@@ -507,7 +591,7 @@ class TestSegmentBreakOnToolBoundary:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        prefix = "abc"
+        prefix = "Hello world"
         tail = "x" * 620
         consumer.on_delta(prefix)
         task = asyncio.create_task(consumer.run())
@@ -521,6 +605,56 @@ class TestSegmentBreakOnToolBoundary:
         assert len(sent_texts) == 3
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_sends_full_text_at_tool_boundary(self):
+        """After a tool call, the streamed prefix is stale (from the pre-tool
+        segment).  _send_fallback_final must still send the post-tool response
+        even when continuation_text calculates as empty (#10807)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate a pre-tool streamed segment that becomes the visible prefix
+        pre_tool_text = "I'll run that code now."
+        consumer.on_delta(pre_tool_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        # After the tool call, the model returns a SHORT final response that
+        # does NOT start with the pre-tool prefix.  The continuation calculator
+        # would return empty (no prefix match → full text returned, but if the
+        # streaming edit already showed pre_tool_text, the prefix-based logic
+        # wrongly matches).  Simulate this by setting _last_sent_text to the
+        # pre-tool content, then finishing with different post-tool content.
+        consumer._last_sent_text = pre_tool_text
+        post_tool_response = "⏰ Script timed out after 30s and was killed."
+        consumer.finish()
+        await task
+
+        # The fallback should send the post-tool response via
+        # _send_fallback_final.
+        await consumer._send_fallback_final(post_tool_response)
+
+        # Verify the final text was sent (not silently dropped)
+        sent = False
+        for call in adapter.send.call_args_list:
+            content = call[1].get("content", call[0][0] if call[0] else "")
+            if "timed out" in str(content):
+                sent = True
+                break
+        assert sent, (
+            "Post-tool timeout response was silently dropped by "
+            "_send_fallback_final — the #10807 fix should prevent this"
+        )
 
 
 class TestInterimCommentaryMessages:

@@ -335,16 +335,11 @@ class TestChannelDirectory(unittest.TestCase):
 
     def test_email_in_session_discovery(self):
         from gateway.config import Platform
-        # Verify email is a valid Platform member so build_channel_directory
-        # will include it via the Platform enum iteration.
-        self.assertIn(Platform.EMAIL, Platform)
-        self.assertEqual(Platform.EMAIL.value, "email")
-        # Ensure email is NOT in the skip set used by build_channel_directory
-        import gateway.channel_directory
-        import inspect
-        source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn("_SKIP_SESSION_DISCOVERY", source)
-        self.assertNotIn('"email"', source.split("_SKIP_SESSION_DISCOVERY")[1].split("}")[0] if "_SKIP_SESSION_DISCOVERY" in source else "")
+        # Verify email is a Platform enum member — the dynamic loop in
+        # build_channel_directory iterates all Platform members, so email
+        # is included automatically as long as it's in the enum.
+        email_values = [p.value for p in Platform]
+        self.assertIn("email", email_values)
 
 
 class TestGatewaySetup(unittest.TestCase):

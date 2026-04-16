@@ -114,11 +114,16 @@ class TestMatrixSyncAuthRetry:
     """gateway/platforms/matrix.py — _sync_loop()"""
 
     def test_unknown_token_sync_error_stops_loop(self):
-        """An exception with M_UNKNOWN_TOKEN should stop syncing.
+        """A SyncError with M_UNKNOWN_TOKEN should stop syncing."""
+        import types
+        nio_mock = types.ModuleType("nio")
 
-        The sync loop detects permanent auth failures via exception string
-        matching (401/403/unauthorized/forbidden keywords).
-        """
+        class SyncError:
+            def __init__(self, message):
+                self.message = message
+
+        nio_mock.SyncError = SyncError
+
         from gateway.platforms.matrix import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
@@ -128,15 +133,24 @@ class TestMatrixSyncAuthRetry:
         async def fake_sync(timeout=30000, since=None):
             nonlocal sync_count
             sync_count += 1
-            raise RuntimeError("M_UNKNOWN_TOKEN: 401 Unauthorized")
+            return SyncError("M_UNKNOWN_TOKEN: Invalid access token")
 
         adapter._client = MagicMock()
         adapter._client.sync = fake_sync
         adapter._client.sync_store = MagicMock()
         adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
         adapter._pending_megolm = []
+        adapter._joined_rooms = set()
 
-        asyncio.run(adapter._sync_loop())
+        async def run():
+            import sys
+            sys.modules["nio"] = nio_mock
+            try:
+                await adapter._sync_loop()
+            finally:
+                del sys.modules["nio"]
+
+        asyncio.run(run())
         assert sync_count == 1
 
     def test_exception_with_401_stops_loop(self):
@@ -157,6 +171,7 @@ class TestMatrixSyncAuthRetry:
         adapter._client.sync_store = MagicMock()
         adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
         adapter._pending_megolm = []
+        adapter._joined_rooms = set()
 
         async def run():
             import types
@@ -194,6 +209,7 @@ class TestMatrixSyncAuthRetry:
         adapter._client.sync_store = MagicMock()
         adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
         adapter._pending_megolm = []
+        adapter._joined_rooms = set()
 
         async def run():
             import types
