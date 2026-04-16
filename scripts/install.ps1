@@ -589,7 +589,8 @@ function Install-Dependencies {
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $UvCmd
-        $psi.Arguments = ($Args -join ' ')
+        $psi.Arguments = ($UvArgs -join ' ')
+        $psi.WorkingDirectory = $InstallDir
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
@@ -614,7 +615,7 @@ function Install-Dependencies {
 
     # Install main package with all extras
     $mainInstalled = $false
-    $mainResult = Invoke-UvAndCapture -Args $mainInstallArgs
+    $mainResult = Invoke-UvAndCapture -UvArgs $mainInstallArgs
     if ($mainResult.ExitCode -eq 0) {
         $mainInstalled = $true
     } else {
@@ -624,7 +625,7 @@ function Install-Dependencies {
     }
 
     if (-not $mainInstalled) {
-        $fallbackResult = Invoke-UvAndCapture -Args $fallbackInstallArgs
+        $fallbackResult = Invoke-UvAndCapture -UvArgs $fallbackInstallArgs
         if ($fallbackResult.ExitCode -eq 0) {
             $mainInstalled = $true
         } else {
@@ -645,7 +646,9 @@ function Install-Dependencies {
     Write-Info "Installing tinker-atropos (RL training backend)..."
     if (Test-Path "tinker-atropos\pyproject.toml") {
         try {
-            & $UvCmd @submoduleInstallArgs 2>&1 | Out-Null
+            $submoduleResult = Invoke-UvAndCapture -UvArgs $submoduleInstallArgs
+            if ($submoduleResult.StdOut) { Write-Host $submoduleResult.StdOut }
+            if ($submoduleResult.StdErr) { Write-Host $submoduleResult.StdErr }
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "tinker-atropos installed"
             } else {
