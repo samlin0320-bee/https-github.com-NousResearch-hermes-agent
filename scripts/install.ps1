@@ -416,9 +416,29 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
+            $statusOutput = @(git status --porcelain 2>$null)
+            $statusRelevant = @($statusOutput | Where-Object {
+                $_ -notmatch '^\?\?\s+package-lock\.json$' -and
+                $_ -notmatch '^\s*M\s+package-lock\.json$' -and
+                $_ -notmatch '^\?\?\s+scripts/whatsapp-bridge/package-lock\.json$' -and
+                $_ -notmatch '^\s*M\s+scripts/whatsapp-bridge/package-lock\.json$'
+            })
+
             git -c windows.appendAtomically=false fetch origin
             git -c windows.appendAtomically=false checkout $Branch
-            git -c windows.appendAtomically=false pull origin $Branch
+
+            if ($statusRelevant.Count -gt 0) {
+                Write-Warn "Local changes detected in existing install - skipping git pull"
+            } else {
+                try {
+                    git -c windows.appendAtomically=false pull --rebase origin $Branch
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Warn "Git update failed - continuing with existing checkout"
+                    }
+                } catch {
+                    Write-Warn "Git update failed - continuing with existing checkout"
+                }
+            }
             Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
@@ -567,19 +587,31 @@ function Install-Dependencies {
     # Install main package with all extras
     $mainInstalled = $false
     try {
-        & $UvCmd @mainInstallArgs 2>&1 | Out-Null
+        $mainInstallOutput = & $UvCmd @mainInstallArgs 2>&1
         if ($LASTEXITCODE -eq 0) {
             $mainInstalled = $true
+        } else {
+            Write-Warn "Primary dependency install failed - retrying with minimal extras"
+            $mainInstallOutput | ForEach-Object { Write-Host $_ }
         }
-    } catch { }
+    } catch {
+        Write-Warn "Primary dependency install threw an exception - retrying with minimal extras"
+        if ($mainInstallOutput) { $mainInstallOutput | ForEach-Object { Write-Host $_ } }
+    }
 
     if (-not $mainInstalled) {
         try {
-            & $UvCmd @fallbackInstallArgs 2>&1 | Out-Null
+            $fallbackInstallOutput = & $UvCmd @fallbackInstallArgs 2>&1
             if ($LASTEXITCODE -eq 0) {
                 $mainInstalled = $true
+            } else {
+                Write-Warn "Fallback dependency install failed"
+                $fallbackInstallOutput | ForEach-Object { Write-Host $_ }
             }
-        } catch { }
+        } catch {
+            Write-Warn "Fallback dependency install threw an exception"
+            if ($fallbackInstallOutput) { $fallbackInstallOutput | ForEach-Object { Write-Host $_ } }
+        }
     }
 
     if (-not $mainInstalled) {
