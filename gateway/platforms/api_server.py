@@ -872,7 +872,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = resolved_model["requested_model"]        created = int(time.time())
+        model_name = resolved_model["requested_model"]
+        created = int(time.time())
 
         if stream:
             import queue as _q

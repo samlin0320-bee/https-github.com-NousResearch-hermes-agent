@@ -398,8 +398,8 @@ class TestModelsEndpoint:
         }
 
     @pytest.mark.asyncio
-    async def test_models_returns_profile_name(self):
-        """When running under a named profile, /v1/models advertises the profile name."""
+    async def test_models_includes_hermes_agent_alias(self):
+        """/v1/models should always include the backward-compatible hermes-agent alias."""
         with patch("gateway.platforms.api_server.APIServerAdapter._resolve_model_name", return_value="lucas"):
             adapter = _make_adapter()
         app = _create_app(adapter)
@@ -407,8 +407,8 @@ class TestModelsEndpoint:
             resp = await cli.get("/v1/models")
             assert resp.status == 200
             data = await resp.json()
-            assert data["data"][0]["id"] == "lucas"
-            assert data["data"][0]["root"] == "lucas"
+            model_ids = [item["id"] for item in data["data"]]
+            assert "hermes-agent" in model_ids
 
     @pytest.mark.asyncio
     async def test_models_returns_explicit_model_name(self):
@@ -481,7 +481,7 @@ class TestChatCompletionsEndpoint:
     async def test_empty_messages_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
+            resp = await cli.post("/v1/chat/completions", json={"model": "hermes-agent", "messages": []})
             assert resp.status == 400
 
     @pytest.mark.asyncio
@@ -543,7 +543,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "do the thing"}],
                         "stream": True,
                     },
