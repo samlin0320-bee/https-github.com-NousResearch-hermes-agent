@@ -584,33 +584,53 @@ function Install-Dependencies {
     $fallbackInstallArgs += @("-e", ".")
     $submoduleInstallArgs += @("-e", ".\tinker-atropos")
 
+    function Invoke-UvAndCapture {
+        param([string[]]$Args)
+
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $UvCmd
+        foreach ($arg in $Args) { [void]$psi.ArgumentList.Add($arg) }
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        if ($env:VIRTUAL_ENV) {
+            $psi.Environment['VIRTUAL_ENV'] = $env:VIRTUAL_ENV
+        }
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $stderr = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+
+        return [pscustomobject]@{
+            ExitCode = $proc.ExitCode
+            StdOut = $stdout
+            StdErr = $stderr
+        }
+    }
+
     # Install main package with all extras
     $mainInstalled = $false
-    try {
-        $mainInstallOutput = & $UvCmd @mainInstallArgs 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $mainInstalled = $true
-        } else {
-            Write-Warn "Primary dependency install failed - retrying with minimal extras"
-            $mainInstallOutput | ForEach-Object { Write-Host $_ }
-        }
-    } catch {
-        Write-Warn "Primary dependency install threw an exception - retrying with minimal extras"
-        if ($mainInstallOutput) { $mainInstallOutput | ForEach-Object { Write-Host $_ } }
+    $mainResult = Invoke-UvAndCapture -Args $mainInstallArgs
+    if ($mainResult.ExitCode -eq 0) {
+        $mainInstalled = $true
+    } else {
+        Write-Warn "Primary dependency install failed - retrying with minimal extras"
+        if ($mainResult.StdOut) { Write-Host $mainResult.StdOut }
+        if ($mainResult.StdErr) { Write-Host $mainResult.StdErr }
     }
 
     if (-not $mainInstalled) {
-        try {
-            $fallbackInstallOutput = & $UvCmd @fallbackInstallArgs 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $mainInstalled = $true
-            } else {
-                Write-Warn "Fallback dependency install failed"
-                $fallbackInstallOutput | ForEach-Object { Write-Host $_ }
-            }
-        } catch {
-            Write-Warn "Fallback dependency install threw an exception"
-            if ($fallbackInstallOutput) { $fallbackInstallOutput | ForEach-Object { Write-Host $_ } }
+        $fallbackResult = Invoke-UvAndCapture -Args $fallbackInstallArgs
+        if ($fallbackResult.ExitCode -eq 0) {
+            $mainInstalled = $true
+        } else {
+            Write-Warn "Fallback dependency install failed"
+            if ($fallbackResult.StdOut) { Write-Host $fallbackResult.StdOut }
+            if ($fallbackResult.StdErr) { Write-Host $fallbackResult.StdErr }
         }
     }
 
