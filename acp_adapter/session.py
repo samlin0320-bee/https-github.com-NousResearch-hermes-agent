@@ -13,6 +13,7 @@ from hermes_constants import get_hermes_home
 import copy
 import json
 import logging
+import os
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -53,6 +54,19 @@ def _clear_task_cwd(task_id: str) -> None:
         clear_task_env_overrides(task_id)
     except Exception:
         logger.debug("Failed to clear ACP task cwd override", exc_info=True)
+
+
+def _parse_toolset_env(name: str) -> Optional[List[str]]:
+    raw = os.environ.get(name, "").strip()
+    if raw == "":
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except Exception:
+        pass
+    return [piece.strip() for piece in raw.split(",") if piece.strip()]
 
 
 @dataclass
@@ -444,12 +458,16 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        delegated_enabled_toolsets = _parse_toolset_env("HERMES_ACP_ENABLED_TOOLSETS_JSON")
+        is_delegated_worker = delegated_enabled_toolsets is not None
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": ["hermes-acp"],
+            "enabled_toolsets": delegated_enabled_toolsets if is_delegated_worker else ["hermes-acp"],
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,
+            "skip_context_files": is_delegated_worker,
+            "skip_memory": is_delegated_worker,
         }
 
         try:

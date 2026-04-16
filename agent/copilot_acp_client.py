@@ -24,6 +24,27 @@ from typing import Any
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
+# Historical naming note: Hermes currently reuses the legacy `copilot-acp`
+# provider/base-url markers for any ACP subprocess transport, not only GitHub
+# Copilot. This module therefore acts as the generic ACP subprocess stdio shim
+# even when the spawned command is `hermes` or another ACP-capable tool.
+
+
+def _coerce_timeout_seconds(timeout: Any) -> float:
+    if timeout is None:
+        return _DEFAULT_TIMEOUT_SECONDS
+    if isinstance(timeout, (int, float)):
+        return float(timeout)
+    for attr in ("read", "timeout", "connect", "write", "pool"):
+        value = getattr(timeout, attr, None)
+        if isinstance(value, (int, float)):
+            return float(value)
+    try:
+        return float(timeout)
+    except (TypeError, ValueError):
+        return _DEFAULT_TIMEOUT_SECONDS
+
+
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
@@ -264,6 +285,7 @@ class CopilotACPClient:
         default_headers: dict[str, str] | None = None,
         acp_command: str | None = None,
         acp_args: list[str] | None = None,
+        acp_env: dict[str, str] | None = None,
         acp_cwd: str | None = None,
         command: str | None = None,
         args: list[str] | None = None,
@@ -274,6 +296,7 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
+        self._acp_env = {str(k): str(v) for k, v in dict(acp_env or {}).items()}
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
@@ -315,7 +338,7 @@ class CopilotACPClient:
         )
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
-            timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
+            timeout_seconds=_coerce_timeout_seconds(timeout),
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -351,6 +374,7 @@ class CopilotACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
+                env={**os.environ, **self._acp_env} if self._acp_env else None,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -427,7 +451,27 @@ class CopilotACPClient:
                     raise RuntimeError(
                         f"Copilot ACP {method} failed: {err.get('message') or err}"
                     )
-                return msg.get("result")
+                result = msg.get("result")
+                if method == "session/prompt" and (text_parts is not None or reasoning_parts is not None):
+                    idle_deadline = time.time() + min(0.5, max(0.2, timeout_seconds * 0.05))
+                    while time.time() < idle_deadline:
+                        try:
+                            trailing = inbox.get(timeout=0.05)
+                        except queue.Empty:
+                            if proc.poll() is not None:
+                                break
+                            continue
+                        if self._handle_server_message(
+                            trailing,
+                            process=proc,
+                            cwd=self._acp_cwd,
+                            text_parts=text_parts,
+                            reasoning_parts=reasoning_parts,
+                        ):
+                            idle_deadline = time.time() + 0.1
+                            continue
+                    return result
+                return result
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
