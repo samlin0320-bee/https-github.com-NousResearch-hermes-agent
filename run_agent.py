@@ -8340,7 +8340,14 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        # user_message may be a list (multimodal content with images) rather
+        # than a plain string — extract text for the log preview.
+        if isinstance(user_message, list):
+            _text_parts = [p.get("text", "") for p in user_message if isinstance(p, dict) and p.get("type") == "text"]
+            _preview_text = " ".join(_text_parts) if _text_parts else "[multimodal message]"
+        else:
+            _preview_text = user_message
+        _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -8388,7 +8395,8 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            _safe_text = _preview_text  # reuse the text extracted above
+            self._safe_print(f"💬 Starting conversation: '{_safe_text[:60]}{'...' if len(_safe_text) > 60 else ''}'")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
