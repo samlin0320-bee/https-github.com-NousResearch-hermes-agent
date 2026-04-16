@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
@@ -37,32 +37,32 @@ $NodeVersion = "22"
 
 function Write-Banner {
     Write-Host ""
-    Write-Host "â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”" -ForegroundColor Magenta
-    Write-Host "â”‚             âš• Hermes Agent Installer                    â”‚" -ForegroundColor Magenta
-    Write-Host "â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤" -ForegroundColor Magenta
-    Write-Host "â”‚  An open source AI agent by Nous Research.              â”‚" -ForegroundColor Magenta
-    Write-Host "â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜" -ForegroundColor Magenta
+    Write-Host "=========================================================" -ForegroundColor Magenta
+    Write-Host "             Hermes Agent Installer" -ForegroundColor Magenta
+    Write-Host "---------------------------------------------------------" -ForegroundColor Magenta
+    Write-Host "  An open source AI agent by Nous Research." -ForegroundColor Magenta
+    Write-Host "=========================================================" -ForegroundColor Magenta
     Write-Host ""
 }
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "â†’ $Message" -ForegroundColor Cyan
+    Write-Host "-> $Message" -ForegroundColor Cyan
 }
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "âœ“ $Message" -ForegroundColor Green
+    Write-Host "[OK] $Message" -ForegroundColor Green
 }
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "âš  $Message" -ForegroundColor Yellow
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
 }
 
 function Write-Err {
     param([string]$Message)
-    Write-Host "âœ-- $Message" -ForegroundColor Red
+    Write-Host "[ERR] $Message" -ForegroundColor Red
 }
 
 # ============================================================================
@@ -142,7 +142,7 @@ function Test-Python {
         }
     } catch { }
     
-    # Python not found â€” use uv to install it (no admin needed!)
+    # Python not found - use uv to install it without admin rights.
     Write-Info "Python $PythonVersion not found, installing via uv..."
     try {
         $uvOutput = & $UvCmd python install $PythonVersion 2>&1
@@ -226,7 +226,7 @@ function Test-Node {
         return $true
     }
 
-    Write-Info "Node.js not found â€” installing Node.js $NodeVersion LTS..."
+    Write-Info "Node.js not found - installing Node.js $NodeVersion LTS..."
 
     # Try winget first (cleanest on modern Windows)
     if (Get-Command winget -ErrorAction SilentlyContinue) {
@@ -459,7 +459,7 @@ function Install-Repository {
         # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Warn "Git clone failed â€” downloading ZIP archive instead..."
+            Write-Warn "Git clone failed - downloading ZIP archive instead..."
             try {
                 $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
                 $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
@@ -550,11 +550,41 @@ function Install-Dependencies {
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
     
+    $mainInstallArgs = @("pip", "install")
+    $fallbackInstallArgs = @("pip", "install")
+    $submoduleInstallArgs = @("pip", "install")
+
+    if ($NoVenv) {
+        $mainInstallArgs += "--system"
+        $fallbackInstallArgs += "--system"
+        $submoduleInstallArgs += "--system"
+    }
+
+    $mainInstallArgs += @("-e", ".[all]")
+    $fallbackInstallArgs += @("-e", ".")
+    $submoduleInstallArgs += @("-e", ".\tinker-atropos")
+
     # Install main package with all extras
+    $mainInstalled = $false
     try {
-        & $UvCmd pip install -e ".[all]" 2>&1 | Out-Null
-    } catch {
-        & $UvCmd pip install -e "." | Out-Null
+        & $UvCmd @mainInstallArgs 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $mainInstalled = $true
+        }
+    } catch { }
+
+    if (-not $mainInstalled) {
+        try {
+            & $UvCmd @fallbackInstallArgs 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $mainInstalled = $true
+            }
+        } catch { }
+    }
+
+    if (-not $mainInstalled) {
+        Pop-Location
+        throw "Failed to install the main Hermes package dependencies."
     }
     
     Write-Success "Main package installed"
@@ -563,8 +593,12 @@ function Install-Dependencies {
     Write-Info "Installing tinker-atropos (RL training backend)..."
     if (Test-Path "tinker-atropos\pyproject.toml") {
         try {
-            & $UvCmd pip install -e ".\tinker-atropos" 2>&1 | Out-Null
-            Write-Success "tinker-atropos installed"
+            & $UvCmd @submoduleInstallArgs 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "tinker-atropos installed"
+            } else {
+                Write-Warn "tinker-atropos install failed (RL tools may not work)"
+            }
         } catch {
             Write-Warn "tinker-atropos install failed (RL tools may not work)"
         }
@@ -721,20 +755,6 @@ function Install-NodeDeps {
         }
     }
     
-    # Install TUI dependencies
-    $tuiDir = "$InstallDir\ui-tui"
-    if (Test-Path "$tuiDir\package.json") {
-        Write-Info "Installing TUI dependencies..."
-        Push-Location $tuiDir
-        try {
-            npm install --silent 2>&1 | Out-Null
-            Write-Success "TUI dependencies installed"
-        } catch {
-            Write-Warn "TUI npm install failed (hermes --tui may not work)"
-        }
-        Pop-Location
-    }
-
     # Install WhatsApp bridge dependencies
     $bridgeDir = "$InstallDir\scripts\whatsapp-bridge"
     if (Test-Path "$bridgeDir\package.json") {
@@ -837,13 +857,13 @@ function Start-GatewayIfConfigured {
 
 function Write-Completion {
     Write-Host ""
-    Write-Host "â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”" -ForegroundColor Green
-    Write-Host "â”‚              âœ“ Installation Complete!                   â”‚" -ForegroundColor Green
-    Write-Host "â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜" -ForegroundColor Green
+    Write-Host "=========================================================" -ForegroundColor Green
+    Write-Host "              Installation Complete!" -ForegroundColor Green
+    Write-Host "=========================================================" -ForegroundColor Green
     Write-Host ""
     
     # Show file locations
-    Write-Host "ðŸ“ Your files:" -ForegroundColor Cyan
+    Write-Host "Your files:" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "   Config:    " -NoNewline -ForegroundColor Yellow
     Write-Host "$HermesHome\config.yaml"
@@ -855,9 +875,9 @@ function Write-Completion {
     Write-Host "$HermesHome\hermes-agent\"
     Write-Host ""
     
-    Write-Host "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€" -ForegroundColor Cyan
+    Write-Host "---------------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "ðŸš€ Commands:" -ForegroundColor Cyan
+    Write-Host "Commands:" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "   hermes              " -NoNewline -ForegroundColor Green
     Write-Host "Start chatting"
@@ -873,9 +893,9 @@ function Write-Completion {
     Write-Host "Update to latest version"
     Write-Host ""
     
-    Write-Host "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€" -ForegroundColor Cyan
+    Write-Host "---------------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "âš¡ Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
+    Write-Host "Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
     Write-Host ""
     
     if (-not $HasNode) {
@@ -899,10 +919,10 @@ function Write-Completion {
 function Main {
     Write-Banner
     
-    if (-not (Install-Uv)) { throw "uv installation failed â€” cannot continue" }
-    if (-not (Test-Python)) { throw "Python $PythonVersion not available â€” cannot continue" }
-    if (-not (Test-Git)) { throw "Git not found â€” install from https://git-scm.com/download/win" }
-    Test-Node              # Auto-installs if missing
+    if (-not (Install-Uv)) { throw "uv installation failed - cannot continue" }
+    if (-not (Test-Python)) { throw "Python $PythonVersion not available - cannot continue" }
+    if (-not (Test-Git)) { throw "Git not found - install from https://git-scm.com/download/win" }
+    [void](Test-Node)       # Auto-installs if missing
     Install-SystemPackages  # ripgrep + ffmpeg in one step
     
     Install-Repository
@@ -931,4 +951,3 @@ try {
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
 }
-
