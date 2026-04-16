@@ -372,6 +372,12 @@ class SessionEntry:
     # set was lost on restart, causing redundant re-flushes).
     memory_flushed: bool = False
 
+    # Set by reset_session() when the user explicitly sends /new.
+    # Consumed once by the message handler to trigger skill re-injection.
+    # Avoids the race where updated_at diverges from created_at before the
+    # next message arrives, causing _is_new_session = False (issue #6508).
+    is_fresh_reset: bool = False
+
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
@@ -396,6 +402,7 @@ class SessionEntry:
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
             "suspended": self.suspended,
+            "is_fresh_reset": self.is_fresh_reset,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -433,6 +440,7 @@ class SessionEntry:
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
             suspended=data.get("suspended", False),
+            is_fresh_reset=data.get("is_fresh_reset", False),
         )
 
 
@@ -851,6 +859,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry
