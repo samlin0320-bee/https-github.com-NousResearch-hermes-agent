@@ -862,10 +862,13 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
-        # Track active message handlers per session for interrupt support
-        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        # Track active message handlers per session for interrupt support.
+        # _active_sessions stores the per-session interrupt Event, while
+        # _session_tasks keeps the task currently processing that session so
+        # reset-like commands can cancel it immediately.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._session_tasks: Dict[str, asyncio.Task] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -1549,6 +1552,107 @@ class BasePlatformAdapter(ABC):
             return f"{existing_text}\n\n{new_text}".strip()
         return existing_text
 
+    def _release_session_guard(
+        self,
+        session_key: str,
+        *,
+        guard: Optional[asyncio.Event] = None,
+    ) -> None:
+        """Release the adapter-level guard for a session.
+
+        When ``guard`` is provided, only release the entry if it still points
+        at that exact Event. This lets reset-like commands swap in a temporary
+        guard while the old processing task unwinds, without having the old
+        task's cleanup accidentally clear the replacement guard.
+        """
+        current_guard = self._active_sessions.get(session_key)
+        if current_guard is None:
+            return
+        if guard is not None and current_guard is not guard:
+            return
+        del self._active_sessions[session_key]
+
+    def _start_session_processing(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        interrupt_event: Optional[asyncio.Event] = None,
+    ) -> bool:
+        """Spawn a background processing task under the given session guard."""
+        guard = interrupt_event or asyncio.Event()
+        self._active_sessions[session_key] = guard
+
+        task = asyncio.create_task(self._process_message_background(event, session_key))
+        self._session_tasks[session_key] = task
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            # Some tests stub create_task() with lightweight sentinels that are
+            # not hashable and do not support lifecycle callbacks.
+            self._session_tasks.pop(session_key, None)
+            self._release_session_guard(session_key, guard=guard)
+            return False
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        return True
+
+    async def _drain_pending_after_session_command(
+        self,
+        session_key: str,
+        command_guard: asyncio.Event,
+    ) -> None:
+        """Resume the latest queued follow-up once a session command completes."""
+        pending_event = self._pending_messages.pop(session_key, None)
+        self._release_session_guard(session_key, guard=command_guard)
+        if pending_event is None:
+            return
+        self._start_session_processing(pending_event, session_key)
+
+    async def _dispatch_active_session_command(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        cmd: str,
+    ) -> None:
+        """Dispatch a reset-like bypass command while preserving guard ordering."""
+        logger.debug(
+            "[%s] Command '/%s' bypassing active-session guard for %s",
+            self.name,
+            cmd,
+            session_key,
+        )
+
+        current_guard = self._active_sessions.get(session_key)
+        command_guard = asyncio.Event()
+        self._active_sessions[session_key] = command_guard
+        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+
+        try:
+            response = await self._message_handler(event)
+            await self.cancel_session_processing(
+                session_key,
+                release_guard=False,
+                discard_pending=False,
+            )
+            if response:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=response,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+        except Exception:
+            if self._active_sessions.get(session_key) is command_guard:
+                if session_key in self._session_tasks and current_guard is not None:
+                    self._active_sessions[session_key] = current_guard
+                else:
+                    self._release_session_guard(session_key, guard=command_guard)
+            raise
+
+        await self._drain_pending_after_session_command(session_key, command_guard)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1580,20 +1684,25 @@ class BasePlatformAdapter(ABC):
             # (see PR #4926).
             cmd = event.get_command()
             if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart"):
-                logger.debug(
-                    "[%s] Command '/%s' bypassing active-session guard for %s",
-                    self.name, cmd, session_key,
-                )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-                    response = await self._message_handler(event)
-                    if response:
-                        await self._send_with_retry(
-                            chat_id=event.source.chat_id,
-                            content=response,
-                            reply_to=event.message_id,
-                            metadata=_thread_meta,
+                    if cmd in ("stop", "new", "reset"):
+                        await self._dispatch_active_session_command(event, session_key, cmd)
+                    else:
+                        logger.debug(
+                            "[%s] Command '/%s' bypassing active-session guard for %s",
+                            self.name,
+                            cmd,
+                            session_key,
                         )
+                        _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                        response = await self._message_handler(event)
+                        if response:
+                            await self._send_with_retry(
+                                chat_id=event.source.chat_id,
+                                content=response,
+                                reply_to=event.message_id,
+                                metadata=_thread_meta,
+                            )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
@@ -1625,19 +1734,7 @@ class BasePlatformAdapter(ABC):
         # starts would also pass the _active_sessions check and spawn a
         # duplicate task.  (grammY sequentialize / aiogram EventIsolation
         # pattern — set the guard synchronously, not inside the task.)
-        self._active_sessions[session_key] = asyncio.Event()
-
-        # Spawn background task to process this message
-        task = asyncio.create_task(self._process_message_background(event, session_key))
-        try:
-            self._background_tasks.add(task)
-        except TypeError:
-            # Some tests stub create_task() with lightweight sentinels that are not
-            # hashable and do not support lifecycle callbacks.
-            return
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        self._start_session_processing(event, session_key)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -1888,12 +1985,14 @@ class BasePlatformAdapter(ABC):
             )
 
             # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
+            if (
+                session_key in self._pending_messages
+                and self._active_sessions.get(session_key) is interrupt_event
+            ):
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
                 # Clean up current session before processing pending
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                self._release_session_guard(session_key, guard=interrupt_event)
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1952,9 +2051,45 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass
             # Clean up session tracking
-            if session_key in self._active_sessions:
-                del self._active_sessions[session_key]
-    
+            self._release_session_guard(session_key, guard=interrupt_event)
+            current_task = asyncio.current_task()
+            if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                del self._session_tasks[session_key]
+
+    async def cancel_session_processing(
+        self,
+        session_key: str,
+        *,
+        release_guard: bool = True,
+        discard_pending: bool = True,
+    ) -> None:
+        """Cancel in-flight processing for a single session.
+
+        ``release_guard=False`` keeps the adapter-level session guard in place
+        so reset-like commands can finish atomically before follow-up messages
+        are allowed to start a fresh background task.
+        """
+        task = self._session_tasks.pop(session_key, None)
+        if task is not None and not task.done():
+            logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
+            self._expected_cancelled_tasks.add(task)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "[%s] Session cancellation raised while unwinding %s",
+                    self.name,
+                    session_key,
+                    exc_info=True,
+                )
+        if discard_pending:
+            self._pending_messages.pop(session_key, None)
+        if release_guard:
+            self._release_session_guard(session_key)
+
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
 
@@ -1969,6 +2104,7 @@ class BasePlatformAdapter(ABC):
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
+        self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 
