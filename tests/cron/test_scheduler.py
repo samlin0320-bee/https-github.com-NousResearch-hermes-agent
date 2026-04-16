@@ -827,6 +827,34 @@ class TestRunJobConfigLogging:
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
 
 
+class TestRunJobScriptSkipIfEmpty:
+    def test_run_job_skips_llm_when_script_output_is_empty(self, tmp_path):
+        job = {
+            "id": "skip-empty-job",
+            "name": "skip empty",
+            "prompt": "Check for changes.",
+            "script": "empty.py",
+            "script_skip_if_empty": True,
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("cron.scheduler._run_job_script", return_value=(True, "")), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == ""
+        assert "Skipped LLM execution" in output
+        mock_agent_cls.assert_not_called()
+        fake_db.end_session.assert_called_once()
+        fake_db.close.assert_called_once()
+
+
 class TestRunJobPerJobOverrides:
     def test_job_level_model_provider_and_base_url_overrides_are_used(self, tmp_path):
         config_yaml = tmp_path / "config.yaml"

@@ -487,7 +487,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
-def _build_job_prompt(job: dict) -> str:
+def _build_job_prompt(job: dict, script_result: Optional[tuple[bool, str]] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
     skills = job.get("skills")
@@ -495,7 +495,7 @@ def _build_job_prompt(job: dict) -> str:
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
     if script_path:
-        success, script_output = _run_job_script(script_path)
+        success, script_output = script_result or _run_job_script(script_path)
         if success:
             if script_output:
                 prompt = (
@@ -597,12 +597,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
-    prompt = _build_job_prompt(job)
+    prompt = ""
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
-
-    logger.info("Running job '%s' (ID: %s)", job_name, job_id)
-    logger.info("Prompt: %s", prompt[:100])
 
     try:
         # Inject origin context so the agent's send_message tool knows the chat.
@@ -626,6 +623,40 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+
+        script_result = None
+        script_path = job.get("script")
+        if script_path:
+            script_result = _run_job_script(script_path)
+            if (
+                job.get("script_skip_if_empty")
+                and script_result[0]
+                and not script_result[1]
+            ):
+                logger.info(
+                    "Job '%s' skipped LLM execution because the pre-run script produced no output",
+                    job_name,
+                )
+                output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Prompt
+
+{job.get("prompt", "")}
+
+## Result
+
+[Skipped LLM execution because the pre-run script produced no output and script_skip_if_empty is enabled.]
+"""
+                return True, output, "", None
+
+        prompt = _build_job_prompt(job, script_result=script_result)
+
+        logger.info("Running job '%s' (ID: %s)", job_name, job_id)
+        logger.info("Prompt: %s", prompt[:100])
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
