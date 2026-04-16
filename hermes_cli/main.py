@@ -4860,9 +4860,8 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
         default=None,
-        help="Inference provider (default: auto)"
+        help="Inference provider (default: auto). Built-in: auto, openrouter, nous, openai-codex, copilot-acp, copilot, anthropic, gemini, huggingface, zai, kimi-coding, kimi-coding-cn, minimax, minimax-cn, kilocode, xiaomi, arcee. Also accepts custom provider names from config.yaml."
     )
     chat_parser.add_argument(
         "-v", "--verbose",
