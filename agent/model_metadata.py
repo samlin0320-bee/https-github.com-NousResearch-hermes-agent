@@ -931,12 +931,81 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     return None
 
 
+def _resolve_config_context_length_override(
+    model: str,
+    *,
+    base_url: str = "",
+    provider: str = "",
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Return a config-defined context override for a named custom provider."""
+    try:
+        from hermes_cli.config import load_config, get_compatible_custom_providers
+
+        if config is None:
+            config = load_config() or {}
+        custom_providers = get_compatible_custom_providers(config)
+        if not isinstance(custom_providers, list):
+            custom_providers = []
+
+        normalized_base_url = (base_url or "").rstrip("/").lower()
+        normalized_provider = (provider or "").strip().lower()
+        model_candidates = []
+        for candidate in (model, _strip_provider_prefix(model)):
+            if isinstance(candidate, str) and candidate and candidate not in model_candidates:
+                model_candidates.append(candidate)
+
+        for cp in custom_providers:
+            if not isinstance(cp, dict):
+                continue
+
+            cp_name = str(cp.get("name") or "").strip().lower()
+            cp_provider_key = str(cp.get("provider_key") or "").strip().lower()
+            cp_base_url = str(cp.get("base_url") or "").strip().rstrip("/").lower()
+
+            matches_provider = bool(normalized_provider) and normalized_provider in {
+                cp_name,
+                cp_provider_key,
+            }
+            matches_base_url = bool(normalized_base_url) and normalized_base_url == cp_base_url
+            if not (matches_provider or matches_base_url):
+                continue
+
+            cp_models = cp.get("models")
+            if isinstance(cp_models, dict):
+                for candidate in model_candidates:
+                    cp_model_cfg = cp_models.get(candidate)
+                    if isinstance(cp_model_cfg, dict):
+                        cp_ctx = cp_model_cfg.get("context_length")
+                        if cp_ctx is not None:
+                            try:
+                                cp_ctx_int = int(cp_ctx)
+                            except (TypeError, ValueError):
+                                cp_ctx_int = 0
+                            if cp_ctx_int > 0:
+                                return cp_ctx_int
+
+            cp_ctx = cp.get("context_length")
+            if cp_ctx is not None:
+                try:
+                    cp_ctx_int = int(cp_ctx)
+                except (TypeError, ValueError):
+                    cp_ctx_int = 0
+                if cp_ctx_int > 0:
+                    return cp_ctx_int
+    except Exception:
+        return None
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",
     api_key: str = "",
     config_context_length: int | None = None,
     provider: str = "",
+    config: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Get the context length for a model.
 
@@ -955,6 +1024,19 @@ def get_model_context_length(
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
+
+    # 0b. Auto-load per-model overrides from config.yaml for named custom
+    # providers when callers don't pass config_context_length explicitly.
+    # This keeps auxiliary paths (gateway banners, compression helpers, CLI
+    # display, etc.) aligned with the main runtime resolution path.
+    config_override = _resolve_config_context_length_override(
+        model,
+        base_url=base_url,
+        provider=provider,
+        config=config,
+    )
+    if config_override is not None:
+        return config_override
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that

@@ -4205,13 +4205,18 @@ class GatewayRunner:
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
         """
-        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from agent.model_metadata import (
+            get_model_context_length,
+            DEFAULT_FALLBACK_CONTEXT,
+            _resolve_config_context_length_override,
+        )
 
         model = _resolve_gateway_model()
         config_context_length = None
         provider = None
         base_url = None
         api_key = None
+        data = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4247,9 +4252,17 @@ class GatewayRunner:
             api_key=api_key or "",
             config_context_length=config_context_length,
             provider=provider or "",
+            config=data,
         )
 
         # Format context source hint
+        if config_context_length is None:
+            config_context_length = _resolve_config_context_length_override(
+                model,
+                base_url=base_url or "",
+                provider=provider or "",
+                config=data,
+            )
         if config_context_length is not None:
             ctx_source = "config"
         elif context_length == DEFAULT_FALLBACK_CONTEXT:

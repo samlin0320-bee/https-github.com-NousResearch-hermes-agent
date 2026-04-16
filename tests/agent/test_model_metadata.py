@@ -373,6 +373,73 @@ class TestGetModelContextLength:
 
         assert result == 200000
 
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("hermes_cli.config.get_compatible_custom_providers")
+    @patch("hermes_cli.config.load_config")
+    def test_auto_loads_named_custom_provider_per_model_context_length(
+        self,
+        mock_load_config,
+        mock_get_compatible_custom_providers,
+        mock_fetch,
+    ):
+        """Callers without explicit config_context_length should still honor named custom provider model overrides."""
+        mock_fetch.return_value = {}
+        mock_load_config.return_value = {"model": {"provider": "test"}}
+        mock_get_compatible_custom_providers.return_value = [{
+            "name": "test",
+            "provider_key": "test",
+            "base_url": "http://example.test/v1",
+            "models": {
+                "gpt-5.4": {"context_length": 1_050_000},
+            },
+        }]
+
+        result = get_model_context_length(
+            "gpt-5.4",
+            base_url="http://example.test/v1",
+            provider="test",
+        )
+
+        assert result == 1_050_000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("hermes_cli.config.get_compatible_custom_providers")
+    @patch("hermes_cli.config.load_config")
+    def test_auto_loads_provider_dict_custom_provider_context_length_by_provider_name(
+        self,
+        mock_load_config,
+        mock_get_compatible_custom_providers,
+        mock_fetch,
+    ):
+        """v12 providers-dict entries should resolve without needing a legacy custom_providers list."""
+        mock_fetch.return_value = {}
+        mock_load_config.return_value = {
+            "providers": {
+                "test": {
+                    "url": "http://example.test/v1",
+                    "default_model": "gpt-5.4",
+                    "models": {
+                        "gpt-5.4": {"context_length": 1_050_000},
+                    },
+                }
+            }
+        }
+        mock_get_compatible_custom_providers.return_value = [{
+            "name": "test",
+            "provider_key": "test",
+            "base_url": "http://example.test/v1",
+            "models": {
+                "gpt-5.4": {"context_length": 1_050_000},
+            },
+        }]
+
+        result = get_model_context_length(
+            "gpt-5.4",
+            provider="test",
+        )
+
+        assert result == 1_050_000
+
 
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
