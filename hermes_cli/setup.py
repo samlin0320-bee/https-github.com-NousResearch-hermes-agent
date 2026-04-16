@@ -18,8 +18,9 @@ import shutil
 import sys
 import copy
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any
 
+from hermes_cli.main import _model_flow_nous
 from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
     get_nous_subscription_features,
@@ -623,7 +624,7 @@ def _prompt_container_resources(config: dict):
 
 
 
-def setup_model_provider(config: dict, *, quick: bool = False):
+def setup_model_provider(config: dict, *, quick: bool | Literal["nous_portal"] = False):
     """Configure the inference provider and default model.
 
     Delegates to ``cmd_model()`` (the same flow used by ``hermes model``)
@@ -645,7 +646,11 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # credential prompting, model selection, and config persistence.
     from hermes_cli.main import select_provider_and_model
     try:
-        select_provider_and_model()
+        if quick == "nous_portal":
+            config = load_config()
+            _model_flow_nous(config)
+        else:
+            select_provider_and_model()
     except (SystemExit, KeyboardInterrupt):
         print()
         print_info("Provider setup skipped.")
@@ -2939,11 +2944,15 @@ def run_setup_wizard(args):
             config = load_config()
 
         setup_mode = prompt_choice("How would you like to set up Hermes?", [
-            "Quick setup — provider, model & messaging (recommended)",
+            "Nous Account setup — model & messaging (recommended)",
+            "Quick setup — provider, model & messaging",
             "Full setup — configure everything",
         ], 0)
 
         if setup_mode == 0:
+            _run_first_time_quick_setup(config, hermes_home, is_existing, nous_quick=True)
+            return
+        if setup_mode == 1:
             _run_first_time_quick_setup(config, hermes_home, is_existing)
             return
 
@@ -3004,7 +3013,7 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
     return None
 
 
-def _offer_launch_chat():
+def _offer_launch_chat(auto_launch = False):
     """Prompt the user to jump straight into chat after setup."""
     print()
     if not prompt_yes_no("Launch hermes chat now?", True):
@@ -3018,7 +3027,7 @@ def _offer_launch_chat():
     os.execvp(chat_argv[0], chat_argv)
 
 
-def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
+def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool, nous_quick=False):
     """Streamlined first-time setup: provider + model only.
 
     Applies sensible defaults for TTS (Edge), terminal (local), agent
@@ -3026,7 +3035,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     ``hermes setup <section>``.
     """
     # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
-    setup_model_provider(config, quick=True)
+    setup_model_provider(config, quick="nous_portal" if nous_quick else True )
 
     # Step 2: Apply defaults for everything else
     _apply_default_agent_settings(config)
@@ -3059,7 +3068,9 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
 
     _print_setup_summary(config, hermes_home)
 
-    _offer_launch_chat()
+    # if the user hasn't set up the gateway, assume they want to launch chat.
+    force_launch_chat = gateway_choice == 0
+    _offer_launch_chat(force_launch_chat)
 
 
 def _run_quick_setup(config: dict, hermes_home):

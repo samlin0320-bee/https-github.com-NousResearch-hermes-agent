@@ -1001,16 +1001,8 @@ def cmd_chat(args):
             )
             sys.exit(1)
 
-        try:
-            reply = input("Run setup now? [Y/n] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            reply = "n"
-        if reply in ("", "y", "yes"):
-            cmd_setup(args)
-            return
-        print()
-        print("You can run 'hermes setup' at any time to configure.")
-        sys.exit(1)
+        cmd_setup(args)
+        return
 
     # Start update check in background (runs while other init happens)
     try:
@@ -1562,7 +1554,7 @@ def _model_flow_nous(config, current_model="", args=None):
         get_provider_auth_state, _prompt_model_selection, _save_model_choice,
         _update_config_for_provider, resolve_nous_runtime_credentials,
         AuthError, format_auth_error,
-        _login_nous, PROVIDER_REGISTRY,
+        login_nous, PROVIDER_REGISTRY,
     )
     from hermes_cli.config import get_env_value, save_config, save_env_value
     from hermes_cli.nous_subscription import (
@@ -1573,8 +1565,6 @@ def _model_flow_nous(config, current_model="", args=None):
 
     state = get_provider_auth_state("nous")
     if not state or not state.get("access_token"):
-        print("Not logged into Nous Portal. Starting login...")
-        print()
         try:
             mock_args = argparse.Namespace(
                 portal_url=getattr(args, "portal_url", None),
@@ -1586,7 +1576,7 @@ def _model_flow_nous(config, current_model="", args=None):
                 ca_bundle=getattr(args, "ca_bundle", None),
                 insecure=bool(getattr(args, "insecure", False)),
             )
-            _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+            login_nous(mock_args, PROVIDER_REGISTRY["nous"])
             print()
             for line in get_nous_subscription_explainer_lines():
                 print(line)
@@ -1626,7 +1616,7 @@ def _model_flow_nous(config, current_model="", args=None):
                     scope=None, no_browser=False, timeout=15.0,
                     ca_bundle=None, insecure=False,
                 )
-                _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+                login_nous(mock_args, PROVIDER_REGISTRY["nous"])
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
             return
