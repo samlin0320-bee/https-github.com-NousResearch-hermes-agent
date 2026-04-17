@@ -78,35 +78,228 @@ class TestDingTalkAdapterInit:
 # ---------------------------------------------------------------------------
 
 
+def _make_chatbot_mock(message_type: str = "", text_content=None, rich_items=None, **extra):
+    msg = MagicMock()
+    msg.message_type = message_type
+
+    if text_content is None:
+        msg.text = None
+    else:
+        msg.text = MagicMock()
+        msg.text.content = text_content
+
+    if rich_items is None:
+        msg.rich_text_content = None
+    else:
+        msg.rich_text_content = MagicMock()
+        msg.rich_text_content.rich_text_list = rich_items
+
+    for name, value in extra.items():
+        setattr(msg, name, value)
+    return msg
+
+
+_DEFAULT_DISPATCH_ATTRS = {
+    "message_id": "msg-x",
+    "conversation_type": "2",
+    "conversation_id": "conv-1",
+    "conversation_title": "Test Chat",
+    "sender_id": "sender-1",
+    "sender_nick": "Sender",
+    "sender_staff_id": "staff-1",
+    "create_at": None,
+    "session_webhook": "https://example/webhook",
+}
+
+
+def _make_dispatch_mock(message_type, *, text_content=None, rich_items=None, **overrides):
+    attrs = {**_DEFAULT_DISPATCH_ATTRS, **overrides}
+    return _make_chatbot_mock(
+        message_type,
+        text_content=text_content,
+        rich_items=rich_items,
+        **attrs,
+    )
+
+
 class TestExtractText:
 
-    def test_extracts_dict_text(self):
+    def test_plain_text_message(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = {"content": "  hello world  "}
-        msg.rich_text = None
+        msg = _make_chatbot_mock("text", text_content="  hello world  ")
         assert DingTalkAdapter._extract_text(msg) == "hello world"
 
-    def test_extracts_string_text(self):
+    def test_empty_plain_text(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = "plain text"
-        msg.rich_text = None
-        assert DingTalkAdapter._extract_text(msg) == "plain text"
-
-    def test_falls_back_to_rich_text(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = ""
-        msg.rich_text = [{"text": "part1"}, {"text": "part2"}, {"image": "url"}]
-        assert DingTalkAdapter._extract_text(msg) == "part1 part2"
-
-    def test_returns_empty_for_no_content(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = ""
-        msg.rich_text = None
+        msg = _make_chatbot_mock("text", text_content="")
         assert DingTalkAdapter._extract_text(msg) == ""
+
+    def test_text_dict_shape_fallback(self):
+        # Older SDKs / custom handlers may pass a dict rather than TextContent.
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.message_type = "text"
+        msg.text = {"content": " from dict "}
+        msg.rich_text_content = None
+        assert DingTalkAdapter._extract_text(msg) == "from dict"
+
+    def test_rich_text_concatenates_text_segments(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock(
+            "richText",
+            rich_items=[{"text": "hello"}, {"text": "world"}],
+        )
+        assert DingTalkAdapter._extract_text(msg) == "hello world"
+
+    def test_rich_text_with_inline_picture(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock(
+            "richText",
+            rich_items=[
+                {"text": "look"},
+                {"downloadCode": "abc", "type": "picture"},
+                {"text": "at this"},
+            ],
+        )
+        assert DingTalkAdapter._extract_text(msg) == "look [图片] at this"
+
+    def test_rich_text_with_at_mention(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock(
+            "richText",
+            rich_items=[
+                {"type": "at", "name": "Yoji", "userId": "u1"},
+                {"text": "hi"},
+            ],
+        )
+        assert DingTalkAdapter._extract_text(msg) == "@Yoji hi"
+
+    def test_rich_text_skips_unknown_items(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock(
+            "richText",
+            rich_items=[{"text": "keep"}, {"foo": "bar"}, "not a dict"],
+        )
+        assert DingTalkAdapter._extract_text(msg) == "keep"
+
+    def test_rich_text_with_no_items_returns_empty(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock("richText", rich_items=[])
+        assert DingTalkAdapter._extract_text(msg) == ""
+
+    def test_rich_text_missing_content_object_returns_empty(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.message_type = "richText"
+        msg.text = None
+        msg.rich_text_content = None
+        assert DingTalkAdapter._extract_text(msg) == ""
+
+    def test_picture_msgtype_returns_placeholder(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock("picture")
+        assert DingTalkAdapter._extract_text(msg) == "[图片]"
+
+    def test_unknown_msgtype_returns_marker(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock("audio")
+        assert DingTalkAdapter._extract_text(msg) == "[未支持的消息类型: audio]"
+
+    def test_missing_msgtype_falls_back_to_plain_text(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock("", text_content="salvage me")
+        assert DingTalkAdapter._extract_text(msg) == "salvage me"
+
+    def test_accepts_precomputed_msgtype(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = _make_chatbot_mock("", text_content="ignored")
+        assert DingTalkAdapter._extract_text(msg, msgtype="picture") == "[图片]"
+
+
+# ---------------------------------------------------------------------------
+# _on_message dispatch routing
+# ---------------------------------------------------------------------------
+
+
+class TestOnMessageRouting:
+
+    def _make_adapter(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle  # type: ignore[assignment]
+        return adapter, captured
+
+    @pytest.mark.asyncio
+    async def test_plain_text_dispatches_as_text(self):
+        from gateway.platforms.base import MessageType
+        adapter, captured = self._make_adapter()
+        await adapter._on_message(_make_dispatch_mock("text", text_content="hi"))
+        assert len(captured) == 1
+        assert captured[0].text == "hi"
+        assert captured[0].message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_empty_text_is_skipped(self):
+        adapter, captured = self._make_adapter()
+        await adapter._on_message(_make_dispatch_mock("text", text_content=""))
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_picture_dispatches_with_photo_type(self):
+        from gateway.platforms.base import MessageType
+        adapter, captured = self._make_adapter()
+        await adapter._on_message(_make_dispatch_mock("picture"))
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.message_type == MessageType.PHOTO
+        assert ev.text == "[图片]"
+        assert ev.source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_dispatches_with_mixed_content(self):
+        from gateway.platforms.base import MessageType
+        adapter, captured = self._make_adapter()
+        msg = _make_dispatch_mock(
+            "richText",
+            rich_items=[{"text": "see"}, {"downloadCode": "x", "type": "picture"}],
+        )
+        await adapter._on_message(msg)
+        assert len(captured) == 1
+        assert captured[0].message_type == MessageType.TEXT
+        assert captured[0].text == "see [图片]"
+
+    @pytest.mark.asyncio
+    async def test_empty_rich_text_dispatches_with_fallback_marker(self):
+        adapter, captured = self._make_adapter()
+        await adapter._on_message(_make_dispatch_mock("richText", rich_items=[]))
+        assert len(captured) == 1
+        assert "richText" in captured[0].text
+
+    @pytest.mark.asyncio
+    async def test_unknown_msgtype_still_dispatches(self):
+        from gateway.platforms.base import MessageType
+        adapter, captured = self._make_adapter()
+        await adapter._on_message(_make_dispatch_mock("audio"))
+        assert len(captured) == 1
+        assert captured[0].message_type == MessageType.TEXT
+        assert "audio" in captured[0].text
+
+    @pytest.mark.asyncio
+    async def test_session_webhook_cached_on_dispatch(self):
+        adapter, _ = self._make_adapter()
+        msg = _make_dispatch_mock(
+            "text",
+            text_content="hello",
+            conversation_id="conv-cache",
+            session_webhook="https://api.dingtalk.com/robot/sendBySession?sessionWebhookKey=cache",
+        )
+        await adapter._on_message(msg)
+        assert adapter._session_webhooks["conv-cache"] == "https://api.dingtalk.com/robot/sendBySession?sessionWebhookKey=cache"
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +466,97 @@ class TestPlatformEnum:
 
     def test_dingtalk_in_platform_enum(self):
         assert Platform.DINGTALK.value == "dingtalk"
+
+
+# ---------------------------------------------------------------------------
+# Picture attachment download
+# ---------------------------------------------------------------------------
+
+class TestFetchPictureAttachments:
+    """Exercise the messageFiles/download flow via mocked SDK handler."""
+
+    @staticmethod
+    def _make_adapter(get_url_return):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"client_id": "x", "client_secret": "y"}))
+        handler = MagicMock()
+        handler.get_image_download_url = MagicMock(return_value=get_url_return)
+        adapter._handler = handler
+        return adapter, handler
+
+    def test_returns_empty_when_handler_missing(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"client_id": "x", "client_secret": "y"}))
+        assert adapter._handler is None
+        msg = MagicMock()
+        msg.get_image_list.return_value = ["code1"]
+        urls, types = asyncio.run(adapter._fetch_picture_attachments(msg))
+        assert urls == [] and types == []
+
+    def test_downloads_and_caches_single_image(self):
+        adapter, handler = self._make_adapter("https://cdn.example/img.jpg")
+        msg = MagicMock()
+        msg.get_image_list.return_value = ["code1"]
+        cache_fn = AsyncMock(return_value="/tmp/cached.jpg")
+        with patch("gateway.platforms.dingtalk.cache_image_from_url", cache_fn):
+            urls, types = asyncio.run(adapter._fetch_picture_attachments(msg))
+        assert urls == ["/tmp/cached.jpg"]
+        assert types == ["image/jpeg"]
+        handler.get_image_download_url.assert_called_once_with("code1")
+        cache_fn.assert_awaited_once()
+
+    def test_skips_codes_that_return_empty_url(self):
+        adapter, handler = self._make_adapter("")  # SDK returns "" on failure
+        msg = MagicMock()
+        msg.get_image_list.return_value = ["code1", "code2"]
+        cache_fn = AsyncMock()
+        with patch("gateway.platforms.dingtalk.cache_image_from_url", cache_fn):
+            urls, types = asyncio.run(adapter._fetch_picture_attachments(msg))
+        assert urls == [] and types == []
+        assert handler.get_image_download_url.call_count == 2
+        cache_fn.assert_not_called()
+
+    def test_continues_after_single_cache_failure(self):
+        import httpx as _httpx
+        adapter, handler = self._make_adapter(None)
+        handler.get_image_download_url.side_effect = ["https://cdn/a.jpg", "https://cdn/b.jpg"]
+        msg = MagicMock()
+        msg.get_image_list.return_value = ["c1", "c2"]
+        cache_fn = AsyncMock(side_effect=[_httpx.HTTPError("blip"), "/tmp/b.jpg"])
+        with patch("gateway.platforms.dingtalk.cache_image_from_url", cache_fn):
+            urls, types = asyncio.run(adapter._fetch_picture_attachments(msg))
+        assert urls == ["/tmp/b.jpg"]
+        assert types == ["image/jpeg"]
+
+    def test_on_message_picture_populates_media_urls(self):
+        """End-to-end: picture msgtype flows through to MessageEvent.media_urls."""
+        adapter, handler = self._make_adapter("https://cdn.example/img.jpg")
+
+        msg = MagicMock()
+        msg.message_id = "m1"
+        msg.message_type = "picture"
+        msg.conversation_id = "cid1"
+        msg.conversation_type = "2"
+        msg.sender_id = "s1"
+        msg.sender_nick = "Yoji"
+        msg.sender_staff_id = "yoji"
+        msg.conversation_title = "group"
+        msg.create_at = 1712_000_000_000
+        msg.session_webhook = None
+        msg.get_image_list.return_value = ["code1"]
+
+        captured = []
+        async def _capture(event):
+            captured.append(event)
+        adapter.handle_message = _capture
+
+        with patch("gateway.platforms.dingtalk.cache_image_from_url", AsyncMock(return_value="/tmp/pic.jpg")):
+            asyncio.run(adapter._on_message(msg))
+
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.media_urls == ["/tmp/pic.jpg"]
+        assert ev.media_types == ["image/jpeg"]
+        assert ev.text == "[图片 × 1]"
+        from gateway.platforms.base import MessageType
+        assert ev.message_type == MessageType.PHOTO
