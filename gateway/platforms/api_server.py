@@ -535,6 +535,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        fallback_model = None
+        if isinstance(user_config, dict):
+            fallback_model = user_config.get("fallback_providers") or user_config.get("fallback_model")
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
