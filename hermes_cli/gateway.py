@@ -222,7 +222,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                     current_cmd = ""
         else:
             result = subprocess.run(
-                ["ps", "eww", "-ax", "-o", "pid=,command="],
+                ["ps", "-A", "eww", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -715,12 +715,23 @@ def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
 
     Checks ``sys.prefix`` first (works regardless of the directory name),
-    then falls back to probing common directory names under PROJECT_ROOT.
+    then ``VIRTUAL_ENV`` env var (covers uv-managed environments where
+    sys.prefix == sys.base_prefix), then falls back to probing common
+    directory names under PROJECT_ROOT.
     Returns ``None`` when no virtualenv can be found.
     """
     # If we're running inside a virtualenv, sys.prefix points to it.
     if sys.prefix != sys.base_prefix:
         venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    # uv and some other tools set VIRTUAL_ENV without changing sys.prefix.
+    # This catches `uv run` where sys.prefix == sys.base_prefix but the
+    # environment IS a venv.  (#8620)
+    _virtual_env = os.environ.get("VIRTUAL_ENV")
+    if _virtual_env:
+        venv = Path(_virtual_env)
         if venv.is_dir():
             return venv
 
@@ -2200,9 +2211,62 @@ def _setup_sms():
 
 
 def _setup_dingtalk():
-    """Configure DingTalk via the standard platform setup."""
+    """Configure DingTalk — QR scan (recommended) or manual credential entry."""
+    from hermes_cli.setup import (
+        prompt_choice, prompt_yes_no, print_info, print_success, print_warning,
+    )
+
     dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
-    _setup_standard_platform(dingtalk_platform)
+    emoji = dingtalk_platform["emoji"]
+    label = dingtalk_platform["label"]
+
+    print()
+    print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
+
+    existing = get_env_value("DINGTALK_CLIENT_ID")
+    if existing:
+        print()
+        print_success(f"{label} is already configured (Client ID: {existing}).")
+        if not prompt_yes_no(f"  Reconfigure {label}?", False):
+            return
+
+    print()
+    method = prompt_choice(
+        "  Choose setup method",
+        [
+            "QR Code Scan (Recommended, auto-obtain Client ID and Client Secret)",
+            "Manual Input (Client ID and Client Secret)",
+        ],
+        default=0,
+    )
+
+    if method == 0:
+        # ── QR-code device-flow authorization ──
+        try:
+            from hermes_cli.dingtalk_auth import dingtalk_qr_auth
+        except ImportError as exc:
+            print_warning(f"  QR auth module failed to load ({exc}), falling back to manual input.")
+            _setup_standard_platform(dingtalk_platform)
+            return
+
+        result = dingtalk_qr_auth()
+        if result is None:
+            print_warning("  QR auth incomplete, falling back to manual input.")
+            _setup_standard_platform(dingtalk_platform)
+            return
+
+        client_id, client_secret = result
+        save_env_value("DINGTALK_CLIENT_ID", client_id)
+        save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
+        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
+        print()
+        print_success(f"{emoji} {label} configured via QR scan!")
+    else:
+        # ── Manual entry ──
+        _setup_standard_platform(dingtalk_platform)
+        # Also enable allow-all by default for convenience
+        if get_env_value("DINGTALK_CLIENT_ID"):
+            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
 
 
 def _setup_wecom():
@@ -2738,6 +2802,8 @@ def gateway_setup():
             _setup_signal()
         elif platform["key"] == "weixin":
             _setup_weixin()
+        elif platform["key"] == "dingtalk":
+            _setup_dingtalk()
         elif platform["key"] == "feishu":
             _setup_feishu()
         else:

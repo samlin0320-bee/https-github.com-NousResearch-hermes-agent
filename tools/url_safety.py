@@ -31,6 +31,13 @@ _BLOCKED_HOSTNAMES = frozenset({
     "metadata.goog",
 })
 
+# Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
+# This is intentionally narrow: QQ media downloads can legitimately resolve
+# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+_TRUSTED_PRIVATE_IP_HOSTS = frozenset({
+    "multimedia.nt.qq.com.cn",
+})
+
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
 # ipaddress.is_private — it returns False for both is_private and is_global.
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
@@ -50,6 +57,11 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
+    """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
+    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+
+
 def is_safe_url(url: str) -> bool:
     """Return True if the URL target is not a private/internal address.
 
@@ -58,10 +70,10 @@ def is_safe_url(url: str) -> bool:
     """
     try:
         parsed = urlparse(url)
-        if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        scheme = (parsed.scheme or "").strip().lower()
+        if scheme not in _ALLOWED_SCHEMES:
             return False
-
-        hostname = (parsed.hostname or "").strip().lower()
         if not hostname:
             return False
 
@@ -69,6 +81,8 @@ def is_safe_url(url: str) -> bool:
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
+
+        allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
         # Try to resolve and check IP
         try:
@@ -86,12 +100,18 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 continue
 
-            if _is_blocked_ip(ip):
+            if not allow_private_ip and _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
                 return False
+
+        if allow_private_ip:
+            logger.debug(
+                "Allowing trusted hostname despite private/internal resolution: %s",
+                hostname,
+            )
 
         return True
 
