@@ -104,6 +104,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "venice": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("VENICE_API_KEY",),
+        base_url_override="https://api.venice.ai/api/v1",
+        base_url_env_var="VENICE_BASE_URL",
+    ),
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
@@ -205,6 +211,11 @@ ALIASES: Dict[str, str] = {
     "claude": "anthropic",
     "claude-code": "anthropic",
 
+    # venice
+    "veniceai": "venice",
+    "venice-ai": "venice",
+    "venice.ai": "venice",
+
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
     "github": "github-copilot",
@@ -282,6 +293,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    "venice": "Venice",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
@@ -390,8 +402,6 @@ def get_label(provider_id: str) -> str:
         return pdef.name
 
     return canonical
-
-
 
 
 def is_aggregator(provider: str) -> bool:
