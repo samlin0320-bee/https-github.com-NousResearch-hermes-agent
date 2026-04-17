@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    SIMPLEX = "simplex"
 
 
 @dataclass
@@ -314,6 +315,9 @@ class GatewayConfig:
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
+            # SimpleX uses extra dict for config (ws_url)
+            elif platform == Platform.SIMPLEX and config.extra.get("ws_url"):
+                connected.append(platform)
             # DingTalk uses client_id/client_secret from config.extra or env vars
             elif platform == Platform.DINGTALK and (
                 config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
@@ -321,7 +325,7 @@ class GatewayConfig:
                 config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
             ):
                 connected.append(platform)
-        
+
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -1236,6 +1240,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # SimpleX Chat
+    simplex_ws_url = os.getenv("SIMPLEX_WS_URL")
+    if simplex_ws_url:
+        if Platform.SIMPLEX not in config.platforms:
+            config.platforms[Platform.SIMPLEX] = PlatformConfig()
+        config.platforms[Platform.SIMPLEX].enabled = True
+        config.platforms[Platform.SIMPLEX].extra.update({
+            "ws_url": simplex_ws_url,
+            "auto_accept": os.getenv("SIMPLEX_AUTO_ACCEPT", "true").lower() in ("true", "1", "yes"),
+        })
+    simplex_home = os.getenv("SIMPLEX_HOME_CHANNEL")
+    if simplex_home and Platform.SIMPLEX in config.platforms:
+        config.platforms[Platform.SIMPLEX].home_channel = HomeChannel(
+            platform=Platform.SIMPLEX,
+            chat_id=simplex_home,
+            name=os.getenv("SIMPLEX_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
