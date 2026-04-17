@@ -519,6 +519,9 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 _QWEN_CODE_VERSION = "0.14.1"
 
 
+_CUSTOM_ENDPOINT_COMPAT_UA = "Mozilla/5.0 HermesCompat"
+
+
 def _qwen_portal_headers() -> dict:
     """Return default HTTP headers required by Qwen Portal API."""
     import platform as _plat
@@ -530,6 +533,11 @@ def _qwen_portal_headers() -> dict:
         "X-DashScope-UserAgent": _ua,
         "X-DashScope-AuthType": "qwen-oauth",
     }
+
+
+def _custom_endpoint_headers() -> dict:
+    """Neutral User-Agent for OpenAI-compatible proxies that block SDK defaults."""
+    return {"User-Agent": _CUSTOM_ENDPOINT_COMPAT_UA}
 
 
 class AIAgent:
@@ -981,6 +989,8 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif self.provider and self.provider.startswith("custom"):
+                    client_kwargs["default_headers"] = _custom_endpoint_headers()
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -4891,6 +4901,8 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+        elif self.provider and self.provider.startswith("custom"):
+            self._client_kwargs["default_headers"] = _custom_endpoint_headers()
         else:
             self._client_kwargs.pop("default_headers", None)
 
