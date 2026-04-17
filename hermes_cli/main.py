@@ -5969,9 +5969,9 @@ Examples:
 
         action = args.sessions_action
 
-        # Hide third-party tool sessions by default, but honour explicit --source
+        # Hide background/internal session sources by default, but honour explicit --source
         _source = getattr(args, "source", None)
-        _exclude = None if _source else ["tool"]
+        _exclude = None if _source else ["tool", "cron"]
 
         if action == "list":
             sessions = db.list_sessions_rich(source=args.source, exclude_sources=_exclude, limit=args.limit)
@@ -6067,7 +6067,7 @@ Examples:
         elif action == "browse":
             limit = getattr(args, "limit", 50) or 50
             source = getattr(args, "source", None)
-            _browse_exclude = None if source else ["tool"]
+            _browse_exclude = None if source else ["tool", "cron"]
             sessions = db.list_sessions_rich(source=source, exclude_sources=_browse_exclude, limit=limit)
             db.close()
             if not sessions:
