@@ -3334,7 +3334,7 @@ class GatewayRunner:
             full_reply_text = event.reply_to_text
             _REPLY_TO_LIMIT = 3000
             if len(full_reply_text) > _REPLY_TO_LIMIT:
-                reply_snippet = full_reply_text[:_REPLY_TO_LIMIT] + "\n…[已截断，原文过长]"
+                reply_snippet = full_reply_text[:_REPLY_TO_LIMIT] + "\n... [truncated] Stashed changes
             else:
                 reply_snippet = full_reply_text
             found_in_history = any(
@@ -3347,7 +3347,7 @@ class GatewayRunner:
             else:
                 # 即使 parent message 在历史中，也加简短标记让 agent 知道在回复哪条
                 marker_preview = reply_snippet[:80].replace("\n", " ")
-                message_text = f'[Replying to earlier message: "{marker_preview}…"]\n\n{message_text}'
+                message_text = f'[Replying to earlier message: "{marker_preview}..."]\n\n{message_text}' Stashed changes
 
         if "@" in message_text:
             try:
