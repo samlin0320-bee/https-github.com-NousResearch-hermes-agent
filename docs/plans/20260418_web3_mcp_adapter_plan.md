@@ -7,15 +7,15 @@
 
 | Source | Finding |
 |--------|---------|
-| `E:\MyPROJECT\NousPR\Master_Ledger.md` | **#029** [songcheng151] OPEN FEAT: `src/hermes_mcp/`, `tools/mcp_tool.py`, tests — MCP TaskGroup / stdio lifecycle. **No** ledger row for Web3 / `web3_adapter` / wallet MCP. |
-| `E:\MyPROJECT\NousPR\GitHub_Radar.md` | **#11735** OPEN `feat(mcp): TaskGroup discovery, list_tools backoff...` — same theme as #029. |
+| Central `Master_Ledger.md` (parent workspace) | **#029** OPEN FEAT: `src/hermes_mcp/`, `tools/mcp_tool.py`, tests — MCP TaskGroup / stdio lifecycle. **No** ledger row for Web3 / `web3_adapter` / wallet MCP. |
+| `GitHub_Radar.md` (same workspace) | **#11735** OPEN `feat(mcp): TaskGroup discovery, list_tools backoff...` — same theme as #029. |
 | Repo today | `optional-skills/blockchain/{base,solana}` = read/query clients only. `optional-skills/mcp/fastmcp` exists. Hermes registers MCP via `~/.hermes/config.yaml` → `mcp_servers` (`tools/mcp_tool.py`). **No** `src/mcp/adapters/` tree. |
 
 **Decision**: Web3 MCP adapter is **blue ocean** for feature name, but **merge-safety**: do **not** touch `tools/mcp_tool.py` or `src/hermes_mcp/` in the same PR as #029; ship as **optional skill** + standalone MCP stdio entrypoint + docs/examples only.
 
-**Pre-code “免战牌”**: Before `git checkout -b`, append a new row to `Master_Ledger.md` index + detail block (per `.cursorrules` Phase 2 template) claiming `optional-skills/mcp/web3-chain-tools/` (or chosen final slug) as WIP.
+**Pre-code claim**: Before `git checkout -b`, append a row to workspace `Master_Ledger.md` index + detail block claiming `optional-skills/mcp/web3-chain-tools/` as WIP.
 
-**Sync**: From repo root (`Alpha_02` worktree only): `git checkout main` → `git pull E:\MyPROJECT\NousPR\Official_Hermes_Mirror main` — **never** `cd` into `Official_Hermes_Mirror`.
+**Sync**: From Hermes repo root: `git checkout main` → `git pull <local-hermes-mirror-remote> main` — do not modify files inside the mirror repo clone directly.
 
 ---
 
@@ -27,14 +27,14 @@
 - **Details**: After successful mirror pull; no commits yet.  
 - **Verification**: `git branch --show-current` prints the feature branch.
 
-**[Step 2]** Claim ledger (免战牌)  
-- **File**: `E:\MyPROJECT\NousPR\Master_Ledger.md`  
-- **Action**: Modify (append index row + detail block per constitution)  
+**[Step 2]** Claim ledger  
+- **File**: workspace `Master_Ledger.md` (out-of-repo ledger, not committed)  
+- **Action**: Modify (append index row + detail block per team template)  
 - **Details**: State WIP on new optional skill path; link branch name; avoid claiming #029 files.  
 - **Verification**: New `<span id="NNN">` block exists; index table row added.
 
 **[Step 3]** Optional: load builder doc  
-- **File**: `E:\MyPROJECT\NousPR\Nous_Domain_Skills\Hermes_Skill_Builder.md`  
+- **File**: team `Hermes_Skill_Builder.md` (if available)  
 - **Action**: Read  
 - **Details**: Align SKILL frontmatter, scripts layout, English-only code/comments.  
 - **Verification**: Checklist items from doc satisfied before first commit.
@@ -138,7 +138,7 @@
 ## Phase 6 — Verification & handoff
 
 **[Step 17]** Test sentinel  
-- **Action**: Run `python "C:\Users\Administrator\.cursor\skills\test-sentinel\scripts\test_runner.py"` (or targeted pytest first if sentinel wraps it).  
+- **Action**: Run local `test_runner.py` from test-sentinel skill (or targeted pytest).  
 - **Verification**: Green or documented skip reasons only for optional network.
 
 **[Step 18]** Commit discipline  
