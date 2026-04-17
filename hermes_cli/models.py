@@ -1392,6 +1392,26 @@ def copilot_default_headers() -> dict[str, str]:
         }
 
 
+def kimi_coding_required_temperature(
+    model_id: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return the exact temperature required by Kimi Coding routes, if any.
+
+    Kimi's ``k2.6-code-preview`` on ``api.kimi.com/coding/v1`` currently rejects
+    omitted temperatures and any value other than ``0.6`` with:
+    ``invalid temperature: only 0.6 is allowed for this model``.
+    """
+    normalized_model = (model_id or "").strip().lower()
+    normalized_base = (base_url or "").strip().lower()
+    if "api.kimi.com" not in normalized_base:
+        return None
+    if normalized_model == "k2.6-code-preview":
+        return 0.6
+    return None
+
+
 def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     model_id = str(item.get("id") or "").strip()
     if not model_id:

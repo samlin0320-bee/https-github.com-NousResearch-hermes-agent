@@ -729,7 +729,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                from hermes_cli.auth import kimi_coding_default_headers
+                extra["default_headers"] = kimi_coding_default_headers()
             elif "api.githubcopilot.com" in base_url.lower():
                 from hermes_cli.models import copilot_default_headers
 
@@ -750,7 +751,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
-            extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            from hermes_cli.auth import kimi_coding_default_headers
+            extra["default_headers"] = kimi_coding_default_headers()
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -1312,7 +1314,8 @@ def _to_async_client(sync_client, model: str):
 
         async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+        from hermes_cli.auth import kimi_coding_default_headers
+        async_kwargs["default_headers"] = kimi_coding_default_headers()
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1490,7 +1493,8 @@ def resolve_provider_client(
             )
             extra = {}
             if "api.kimi.com" in custom_base.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                from hermes_cli.auth import kimi_coding_default_headers
+                extra["default_headers"] = kimi_coding_default_headers()
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
@@ -1588,7 +1592,8 @@ def resolve_provider_client(
         # Provider-specific headers
         headers = {}
         if "api.kimi.com" in base_url.lower():
-            headers["User-Agent"] = "KimiCLI/1.30.0"
+            from hermes_cli.auth import kimi_coding_default_headers
+            headers.update(kimi_coding_default_headers())
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -2304,6 +2309,15 @@ def _build_call_kwargs(
 
     if temperature is not None:
         kwargs["temperature"] = temperature
+
+    from hermes_cli.models import kimi_coding_required_temperature
+
+    kimi_required_temp = kimi_coding_required_temperature(
+        model,
+        base_url=base_url,
+    )
+    if kimi_required_temp is not None:
+        kwargs["temperature"] = kimi_required_temp
 
     if max_tokens is not None:
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
