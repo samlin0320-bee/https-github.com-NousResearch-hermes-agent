@@ -80,6 +80,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | **fastmcp** | Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Covers wrapping APIs or databases as MCP tools, exposing resources or prompts, and deployment. |
+| **web3-chain-tools** | Stdio MCP server for Ethereum (`web3.py`) and Solana (`solana-py`): balances, `eth_call`, gas estimates, pre-signed broadcasts, log snapshots into a SQLite queue, optional WS listener — install `hermes-agent[web3-mcp]`. |
 
 ## Migration
 
