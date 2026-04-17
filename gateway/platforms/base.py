@@ -1310,9 +1310,6 @@ class BasePlatformAdapter(ABC):
         ``os.path.isfile()`` to avoid false positives from URLs or
         non-existent paths.
 
-        Paths inside fenced code blocks (``` ... ```) and inline code
-        (`...`) are ignored so that code samples are never mutilated.
-
         Returns:
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
@@ -1331,20 +1328,8 @@ class BasePlatformAdapter(ABC):
             re.IGNORECASE,
         )
 
-        # Build spans covered by fenced code blocks and inline code
-        code_spans: list = []
-        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
-            code_spans.append((m.start(), m.end()))
-        for m in re.finditer(r'`[^`\n]+`', content):
-            code_spans.append((m.start(), m.end()))
-
-        def _in_code(pos: int) -> bool:
-            return any(s <= pos < e for s, e in code_spans)
-
         found: list = []  # (raw_match_text, expanded_path)
         for match in path_re.finditer(content):
-            if _in_code(match.start()):
-                continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
             if os.path.isfile(expanded):
