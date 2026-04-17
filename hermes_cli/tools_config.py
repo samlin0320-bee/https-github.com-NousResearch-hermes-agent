@@ -65,6 +65,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
+    ("messaging",       "💬 Messaging",                 "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
