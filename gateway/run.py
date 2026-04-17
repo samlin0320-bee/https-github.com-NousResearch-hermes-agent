@@ -2553,6 +2553,15 @@ class GatewayRunner:
 
             self._finalize_shutdown_agents(active_agents)
 
+            # Stop services before platforms (services may be mid-delivery)
+            for svc_name, svc in list(self.services.items()):
+                try:
+                    await svc.stop()
+                    logger.info("Service %s stopped", svc_name)
+                except Exception as e:
+                    logger.error("Service %s stop error: %s", svc_name, e)
+            self.services.clear()
+
             for platform, adapter in list(self.adapters.items()):
                 try:
                     await adapter.cancel_background_tasks()
@@ -2611,15 +2620,14 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
 
-# Stop services first (before platforms, since services may be mid-delivery)
-        for svc_name, svc in list(self.services.items()):
-            try:
-                await svc.stop()
-                logger.info("Service %s stopped", svc_name)
-            except Exception as e:
-                logger.error("Service %s stop error: %s", svc_name, e)
-        self.services.clear()
-
+            # Stop services before pid file removal
+            for svc_name, svc in list(self.services.items()):
+                try:
+                    await svc.stop()
+                    logger.info("Service %s stopped", svc_name)
+                except Exception as e:
+                    logger.error("Service %s stop error: %s", svc_name, e)
+            self.services.clear()
 
             from gateway.status import remove_pid_file
             remove_pid_file()
