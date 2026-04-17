@@ -4686,16 +4686,14 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
+        # Use result.context_length (per-model custom_providers override) when set.
+        # Still render other model_info metadata when available.
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
+        if result.context_length:
+            _cprint(f"    Context: {result.context_length:,} tokens")
+        elif mi and mi.context_window:
+            _cprint(f"    Context: {mi.context_window:,} tokens")
+        elif mi is None:
             try:
                 from agent.model_metadata import get_model_context_length
                 ctx = get_model_context_length(
@@ -4707,6 +4705,12 @@ class HermesCLI:
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:
                 pass
+        if mi:
+            if mi.max_output:
+                _cprint(f"    Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                _cprint(f"    Cost: {mi.format_cost()}")
+            _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
@@ -4911,17 +4915,13 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Rich metadata from models.dev
+        # Rich metadata from models.dev (prefer result.context_length if set)
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
+        if result.context_length:
+            _cprint(f"    Context: {result.context_length:,} tokens")
+        elif mi and mi.context_window:
+            _cprint(f"    Context: {mi.context_window:,} tokens")
+        elif mi is None:
             # Fallback to old context length lookup
             try:
                 from agent.model_metadata import get_model_context_length
@@ -4934,6 +4934,12 @@ class HermesCLI:
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:
                 pass
+        if mi:
+            if mi.max_output:
+                _cprint(f"    Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                _cprint(f"    Cost: {mi.format_cost()}")
+            _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         # Cache notice
         cache_enabled = (
@@ -7766,14 +7772,24 @@ class HermesCLI:
             self._modal_input_snapshot = None
 
     def _restore_modal_input_snapshot(self) -> None:
-        """Restore any draft text that was present before a modal prompt opened."""
+        """Restore any draft text that was present before a modal prompt opened.
+
+        Note: if the saved text looks like a slash-command that was just dispatched
+        (starts with '/' and contains no spaces after), it is discarded — the user
+        already sent it and doesn't want it restored to the input bar.
+        """
         snapshot = self._modal_input_snapshot
         self._modal_input_snapshot = None
         if not snapshot or not getattr(self, "_app", None):
             return
         try:
             buf = self._app.current_buffer
-            buf.text = snapshot.get("text", "")
+            text = snapshot.get("text", "")
+            # Don't restore a slash-command that was just dispatched — the user
+            # already sent it and doesn't want it re-appearing in the input bar.
+            if text.startswith("/") and " " not in text:
+                text = ""
+            buf.text = text
             buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
         except Exception:
             pass

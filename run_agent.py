@@ -1758,6 +1758,10 @@ class AIAgent:
         if api_key:
             self.api_key = api_key
 
+        # Preserve startup-configured model.context_length override across
+        # provider switches. Per-model custom-provider overrides are resolved
+        # separately in the context compressor update path below.
+
         # ── Build new client ──
         if api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
@@ -1802,12 +1806,32 @@ class AIAgent:
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length
+
+            # Try per-model context_length from custom_providers[].models[]
+            # before falling back to get_model_context_length probe chain.
+            _cp_ctx_override: Optional[int] = None
+            try:
+                from hermes_cli.config import get_compatible_custom_providers, load_config
+                _cfg = load_config()
+                _cps = get_compatible_custom_providers(_cfg)
+                _self_url = (self.base_url or "").rstrip("/")
+                for _cp in _cps:
+                    if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == _self_url:
+                        _cp_models = _cp.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_mcfg = _cp_models.get(self.model, {})
+                            if isinstance(_cp_mcfg, dict) and _cp_mcfg.get("context_length"):
+                                _cp_ctx_override = int(_cp_mcfg["context_length"])
+                        break
+            except Exception:
+                pass  # Fall through to probe chain
+
             new_context_length = get_model_context_length(
                 self.model,
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=_cp_ctx_override or getattr(self, "_config_context_length", None),
             )
             self.context_compressor.update_model(
                 model=self.model,
