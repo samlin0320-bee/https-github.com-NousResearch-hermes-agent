@@ -1,4 +1,5 @@
-name: Tests
+ceo mr reddix permissions:
+  name: Tests
 
 on:
   push:
@@ -42,7 +43,7 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
         env:
-          # Ensure tests don't accidentally call real APIs
+          # Ensure tests  accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
