@@ -2127,7 +2127,7 @@ def _setup_webhooks():
 def _setup_nextcloud_talk():
     """Guide the user through setting up the Nextcloud Talk bot."""
     print_header("Nextcloud Talk")
-    existing = get_env_value("NEXTCLOUD_TALK_BOT_SECRET")
+    existing = get_env_value("NEXTCLOUD_TALK_APP_PASSWORD")
     if existing:
         print_info("Nextcloud Talk: already configured")
         if not prompt_yes_no("Reconfigure Nextcloud Talk?", False):
@@ -2150,7 +2150,7 @@ def _setup_nextcloud_talk():
         save_env_value("NEXTCLOUD_TALK_URL", url)
     secret = prompt("Bot shared secret (from talk:bot:install)", password=True)
     if secret:
-        save_env_value("NEXTCLOUD_TALK_BOT_SECRET", secret)
+        save_env_value("NEXTCLOUD_TALK_APP_PASSWORD", secret)
     print_success("Nextcloud Talk configured. Restart the gateway to apply.")
 
 
@@ -2164,7 +2164,7 @@ _GATEWAY_PLATFORMS = [
     ("SMS (Twilio)", "TWILIO_ACCOUNT_SID", _setup_sms),
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
-    ("Nextcloud Talk", "NEXTCLOUD_TALK_BOT_SECRET", _setup_nextcloud_talk),
+    ("Nextcloud Talk", "NEXTCLOUD_TALK_APP_PASSWORD", _setup_nextcloud_talk),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
     ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
     ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
