@@ -152,6 +152,10 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
 def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    # Isolate from real ~/.codex/auth.json so the import path is not triggered
+    codex_home = tmp_path / "codex_empty"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     token = _jwt_with_email("codex@example.com")
     monkeypatch.setattr(
         "hermes_cli.auth._codex_device_code_login",
@@ -182,6 +186,156 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_codex_imports_from_cli_tokens(tmp_path, monkeypatch):
+    """When ~/.codex/auth.json has valid tokens, auth add should offer import
+    instead of jumping straight to device code."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    # Set up fake ~/.codex/auth.json with valid tokens
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    token = _jwt_with_email("codex-cli@example.com")
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": token,
+            "refresh_token": "rt-from-cli",
+        },
+        "last_refresh": "2026-04-13T10:00:00Z",
+    }))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    # Patch _codex_access_token_is_expiring to return False (token is fresh)
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_access_token_is_expiring",
+        lambda token, skew: False,
+    )
+
+    # Simulate user accepting the import prompt
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    # Ensure _codex_device_code_login is NOT called
+    def _should_not_be_called():
+        raise AssertionError("device code login should not be called when CLI tokens are available")
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", _should_not_be_called)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual:imported_codex_cli")
+    assert entry["label"] == "codex-cli@example.com"
+    assert entry["source"] == "manual:imported_codex_cli"
+    assert entry["refresh_token"] == "rt-from-cli"
+    assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_codex_falls_through_to_device_code_when_no_cli_tokens(tmp_path, monkeypatch):
+    """When ~/.codex/auth.json doesn't exist, auth add should fall through to device code."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    # Point CODEX_HOME at empty dir — no auth.json
+    codex_home = tmp_path / "codex_empty"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    token = _jwt_with_email("device-code@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "rt-device",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-04-13T10:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["label"] == "device-code@example.com"
+    assert entry["refresh_token"] == "rt-device"
+
+
+def test_auth_add_codex_user_declines_import_falls_to_device_code(tmp_path, monkeypatch):
+    """When user declines CLI token import, should fall through to device code."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    # Set up fake ~/.codex/auth.json
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    cli_token = _jwt_with_email("cli-user@example.com")
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": cli_token,
+            "refresh_token": "rt-cli",
+        },
+    }))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_access_token_is_expiring",
+        lambda token, skew: False,
+    )
+
+    # User says "no" to import
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    # Device code should be called instead
+    device_token = _jwt_with_email("device@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": device_token,
+                "refresh_token": "rt-device",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-04-13T10:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    # Should be device_code source, not imported
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["label"] == "device@example.com"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):

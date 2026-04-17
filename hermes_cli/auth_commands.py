@@ -233,6 +233,48 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
+        # Try to import existing Codex CLI credentials before falling back to
+        # device code.  The old ``hermes login --provider openai-codex`` flow
+        # offered this import step, but it was never wired into the new
+        # ``hermes auth add`` path.  Without this, users whose org/workspace
+        # has device-code auth disabled are blocked entirely even though they
+        # have valid tokens in ~/.codex/auth.json from ``codex login``.
+        cli_tokens = auth_mod._import_codex_cli_tokens()
+        if cli_tokens:
+            print("Found existing Codex CLI credentials at ~/.codex/auth.json")
+            print("Hermes will create its own credential pool entry from these tokens.")
+            try:
+                do_import = input("Import these credentials? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "y"
+            if do_import in ("", "y", "yes"):
+                import os as _os
+                base_url = (
+                    _os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                    or auth_mod.DEFAULT_CODEX_BASE_URL
+                )
+                label = (getattr(args, "label", None) or "").strip() or label_from_token(
+                    cli_tokens.get("access_token", ""),
+                    _oauth_default_label(provider, len(pool.entries()) + 1),
+                )
+                entry = PooledCredential(
+                    provider=provider,
+                    id=uuid.uuid4().hex[:6],
+                    label=label,
+                    auth_type=AUTH_TYPE_OAUTH,
+                    priority=0,
+                    source=f"{SOURCE_MANUAL}:imported_codex_cli",
+                    access_token=cli_tokens["access_token"],
+                    refresh_token=cli_tokens.get("refresh_token"),
+                    base_url=base_url,
+                    last_refresh=cli_tokens.get("last_refresh"),
+                )
+                pool.add_entry(entry)
+                print(f'Imported {provider} credential #{len(pool.entries())}: "{entry.label}"')
+                print("Note: Hermes manages its own token refresh independently of Codex CLI.")
+                return
+
+        # Fall back to device code flow
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
