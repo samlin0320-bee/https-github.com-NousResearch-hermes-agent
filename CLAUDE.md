@@ -28,7 +28,7 @@ source venv/bin/activate  # ALWAYS activate before running Python
 ```
 hermes-agent/
 ├── run_agent.py          # AIAgent class — core conversation loop
-├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
+├── model_tools.py        # Tool orchestration, _discover_tools(), handle_function_call()
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
@@ -70,7 +70,7 @@ hermes-agent/
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
-│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot
+│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/        # RL training environments (Atropos)
@@ -213,7 +213,7 @@ if canonical == "mycommand":
 
 ## Adding New Tools
 
-Requires changes in **2 files**:
+Requires changes in **3 files**:
 
 **1. Create `tools/your_tool.py`:**
 ```python
@@ -236,9 +236,9 @@ registry.register(
 )
 ```
 
-**2. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
+**2. Add import** in `model_tools.py` `_discover_tools()` list.
 
-Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual import list to maintain.
+**3. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
 
 - The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
 - Path references in tool schemas: If the schema description mentions file paths (e.g. default output directories), use `display_hermes_home()` to make them profile-aware. The schema is generated at import time, which is after `_apply_profile_override()` sets `HERMES_HOME`.
@@ -382,9 +382,8 @@ Cache-breaking forces dramatically higher costs. The ONLY time we alter context 
 
 ### Background Process Notifications (Gateway)
 
-When `terminal(background=true, notify_on_complete=true)` is used, the gateway runs a watcher that
-detects process completion and triggers a new agent turn. Control verbosity of background process
-messages with `display.background_process_notifications`
+When `terminal(background=true, check_interval=...)` is used, the gateway runs a watcher that
+pushes status updates to the user's chat. Control verbosity with `display.background_process_notifications`
 in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
 - `all` — running-output updates + final message (default)
@@ -717,7 +716,7 @@ When working on a task, consider looking beyond the immediate file:
 # Index Files
 
 I have provided an index file to help navigate this codebase:
-- `.codex/docs/general_index.md`
+- `.claude/docs/general_index.md`
 
 The file is organized by directory (## headers), with each file listed as:
 `- `filename` - short description. Key: `construct1`, `construct2` [CATEGORY]`
@@ -725,11 +724,11 @@ The file is organized by directory (## headers), with each file listed as:
 You can grep for directory names, filenames, construct names, or categories (TEST, CLI, PUBLIC_API, GENERATED, SOURCE_CODE) to quickly find relevant files without reading the entire index.
 
 **MANDATORY RULE — NO EXCEPTIONS:** After you read, reference, or consider editing a file or folder, you MUST run:
-`python .codex/docs/get_context.py <path>`
+`python .claude/docs/get_context.py <path>`
 
 This works for **both files and folders**:
-- For a file: `python .codex/docs/get_context.py <file_path>`
-- For a folder: `python .codex/docs/get_context.py <folder_path>`
+- For a file: `python .claude/docs/get_context.py <file_path>`
+- For a folder: `python .claude/docs/get_context.py <folder_path>`
 
 This is a hard requirement for EVERY file and folder you touch. Without this, you'll miss recent important information and your edit will likely fail verification. Do not skip this step. Do not assume you already know enough. Do not batch it "for later." Do not skip files even if you have obtained context about a parent directory. Run it immediately after any other action on that path.
 
@@ -751,7 +750,7 @@ The command returns critical context you cannot infer on your own:
 
 **Workflow (follow this exact order every time):**
 1. Identify the file or folder you need to work with.
-2. Run `python .codex/docs/get_context.py <path>` and read the output.
+2. Run `python .claude/docs/get_context.py <path>` and read the output.
 3. Only then proceed to read, edit, or reason about it.
 
 If you need to work with multiple paths, run the command for each one before touching any of them.
@@ -761,4 +760,4 @@ If you need to work with multiple paths, run the command for each one before tou
 
 
 ---
-*This knowledge base was extracted by [Codeset](https://codeset.ai) and is available via `python .codex/docs/get_context.py <file_or_folder>`*
+*This knowledge base was extracted by [Codeset](https://codeset.ai) and is available via `python .claude/docs/get_context.py <file_or_folder>`*
