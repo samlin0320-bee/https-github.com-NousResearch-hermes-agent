@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import enum
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -49,13 +50,30 @@ _SUBAGENT_TOOLSETS = sorted(
 )
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
-_DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+_DEFAULT_MAX_CONCURRENT_CHILDREN = 5
+_MAX_CONCURRENT_CHILDREN_CAP = 8
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+
+
+def _clamp_concurrency(value: int, source: str) -> int:
+    """Clamp a concurrency value to [1, _MAX_CONCURRENT_CHILDREN_CAP]."""
+    clamped = max(1, value)
+    if clamped > _MAX_CONCURRENT_CHILDREN_CAP:
+        logger.warning(
+            "%s=%d exceeds cap of %d; clamping to %d",
+            source, clamped,
+            _MAX_CONCURRENT_CHILDREN_CAP, _MAX_CONCURRENT_CHILDREN_CAP,
+        )
+        return _MAX_CONCURRENT_CHILDREN_CAP
+    return clamped
 
 
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
-    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
+    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (5).
+
+    Values above ``_MAX_CONCURRENT_CHILDREN_CAP`` (8) are clamped with a
+    warning log.  Aligned with OpenClaw's DEFAULT_SUBAGENT_MAX_CONCURRENT.
 
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
     uses, keeping config priority consistent (config.yaml > env > default).
@@ -64,22 +82,58 @@ def _get_max_concurrent_children() -> int:
     val = cfg.get("max_concurrent_children")
     if val is not None:
         try:
-            return max(1, int(val))
+            return _clamp_concurrency(int(val), "delegation.max_concurrent_children")
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.max_concurrent_children=%r is not a valid integer; "
                 "using default %d", val, _DEFAULT_MAX_CONCURRENT_CHILDREN,
             )
+            return _DEFAULT_MAX_CONCURRENT_CHILDREN
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
-            return max(1, int(env_val))
+            return _clamp_concurrency(int(env_val), "DELEGATION_MAX_CONCURRENT_CHILDREN")
         except (TypeError, ValueError):
-            pass
+            return _DEFAULT_MAX_CONCURRENT_CHILDREN
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+# ---------------------------------------------------------------------------
+# Delegation progress event types
+# ---------------------------------------------------------------------------
+
+class DelegateEvent(str, enum.Enum):
+    """Formal event types emitted during delegation progress.
+
+    _build_child_progress_callback normalises incoming legacy strings
+    (``tool.started``, ``_thinking``, …) to these enum values via
+    ``_LEGACY_EVENT_MAP``.  External consumers (gateway SSE, ACP adapter,
+    CLI) still receive the legacy strings during the deprecation window.
+
+    TASK_SPAWNED / TASK_COMPLETED / TASK_FAILED are reserved for M3
+    (orchestrator role) and not yet emitted.
+    """
+    TASK_SPAWNED = "delegate.task_spawned"
+    TASK_PROGRESS = "delegate.task_progress"
+    TASK_COMPLETED = "delegate.task_completed"
+    TASK_FAILED = "delegate.task_failed"
+    TASK_THINKING = "delegate.task_thinking"
+    TASK_TOOL_STARTED = "delegate.tool_started"
+    TASK_TOOL_COMPLETED = "delegate.tool_completed"
+
+
+# Legacy event strings → DelegateEvent mapping.
+# Incoming child-agent events use the old names; the callback normalises them.
+_LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
+    "_thinking": DelegateEvent.TASK_THINKING,
+    "reasoning.available": DelegateEvent.TASK_THINKING,
+    "tool.started": DelegateEvent.TASK_TOOL_STARTED,
+    "tool.completed": DelegateEvent.TASK_TOOL_COMPLETED,
+    "subagent_progress": DelegateEvent.TASK_PROGRESS,
+}
 
 
 def check_delegate_requirements() -> bool:
@@ -179,11 +233,12 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     _batch: List[str] = []
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent_progress"
+        # Normalise legacy event strings to DelegateEvent enum.
+        event = _LEGACY_EVENT_MAP.get(event_type)
+        if event is None:
+            return  # Unknown event — ignore
 
-        # "_thinking" / reasoning events
-        if event_type in ("_thinking", "reasoning.available"):
+        if event == DelegateEvent.TASK_THINKING:
             text = preview or tool_name or ""
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
@@ -194,11 +249,10 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             # Don't relay thinking to gateway (too noisy for chat)
             return
 
-        # tool.completed — no display needed here (spinner shows on started)
-        if event_type == "tool.completed":
+        if event == DelegateEvent.TASK_TOOL_COMPLETED:
             return
 
-        # tool.started — display and batch for parent relay
+        # TASK_TOOL_STARTED — display and batch for parent relay
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
@@ -216,6 +270,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
                 try:
+                    # Back-compat: emit legacy "subagent_progress" name
                     parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
                 except Exception as e:
                     logger.debug("Parent callback failed: %s", e)
@@ -1010,7 +1065,7 @@ DELEGATE_TASK_SCHEMA = {
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
+        "2. Batch (parallel): provide 'tasks' array with up to 5 items (max 8). "
         "All run concurrently and results are returned together.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
@@ -1084,10 +1139,10 @@ DELEGATE_TASK_SCHEMA = {
                     "required": ["goal"],
                 },
                 # No maxItems — the runtime limit is configurable via
-                # delegation.max_concurrent_children (default 3) and
+                # delegation.max_concurrent_children (default 5, cap 8) and
                 # enforced with a clear error in delegate_task().
                 "description": (
-                    "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 3). Each gets "
+                    "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 5, max 8). Each gets "
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),
