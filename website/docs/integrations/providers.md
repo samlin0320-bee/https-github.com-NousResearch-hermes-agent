@@ -252,7 +252,9 @@ Both approaches persist to `config.yaml`, which is the source of truth for model
 
 ### Switching Models with `/model`
 
-Once a custom endpoint is configured, you can switch models mid-session:
+Once a custom endpoint is configured, you can switch models mid-session. Run `/model` with no arguments to open the interactive picker, which **probes your custom endpoint's `/v1/models` API** and shows every available model — useful when you have multiple models loaded in Ollama or vLLM.
+
+Or switch directly by name:
 
 ```
 /model custom:qwen-2.5          # Switch to a model on your custom endpoint
@@ -823,21 +825,37 @@ custom_providers:
 
 ### Named Custom Providers
 
-If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`:
+If you work with multiple custom endpoints (e.g., a local Ollama server and a remote GPU server), you can define them as named custom providers in `config.yaml`. There are two equivalent formats:
+
+**`providers` dict** (recommended — key becomes the provider slug):
 
 ```yaml
-custom_providers:
-  - name: local
-    base_url: http://localhost:8080/v1
+providers:
+  local:
+    name: Local Ollama
+    base_url: http://localhost:11434/v1
     # api_key omitted — Hermes uses "no-key-required" for keyless local servers
-  - name: work
+  work:
+    name: Work GPU Server
     base_url: https://gpu-server.internal.corp/v1
     api_key: corp-api-key
     api_mode: chat_completions   # optional, auto-detected from URL
-  - name: anthropic-proxy
+  anthropic-proxy:
+    name: Anthropic Proxy
     base_url: https://proxy.example.com/anthropic
     api_key: proxy-key
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
+```
+
+**`custom_providers` list** (legacy — supports multiple entries per provider for pre-configured model lists):
+
+```yaml
+custom_providers:
+  - name: Local Ollama
+    base_url: http://localhost:11434/v1
+  - name: Work GPU Server
+    base_url: https://gpu-server.internal.corp/v1
+    api_key: corp-api-key
 ```
 
 Switch between them mid-session with the triple syntax:
@@ -848,7 +866,13 @@ Switch between them mid-session with the triple syntax:
 /model custom:anthropic-proxy:claude-sonnet-4  # Use the proxy
 ```
 
-You can also select named custom providers from the interactive `hermes model` menu.
+You can also select named custom providers from the interactive `hermes model` menu or the `/model` TUI picker.
+
+:::tip Live model discovery in `/model`
+When you open `/model` and select a named custom provider, Hermes probes the endpoint's `/v1/models` API to show all available models — not just the one configured in `config.yaml`. This means you can have a single Ollama entry in your config and still browse and switch between every model Ollama has loaded, directly from the TUI.
+
+If the endpoint is unreachable, the picker falls back to the model list in your config.
+:::
 
 ---
 
