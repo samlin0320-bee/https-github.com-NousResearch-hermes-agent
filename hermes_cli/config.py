@@ -393,7 +393,8 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "vercel_runtime": "node22",
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -793,6 +794,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    12: ["VERCEL_OIDC_TOKEN", "VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1628,6 +1630,38 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": True,
         "category": "setting",
+    },
+    "VERCEL_OIDC_TOKEN": {
+        "description": "OIDC credential for Vercel Sandbox authentication",
+        "prompt": "Vercel OIDC token",
+        "url": "https://vercel.com/docs/vercel-sandbox",
+        "password": True,
+        "category": "setting",
+        "advanced": True,
+    },
+    "VERCEL_TOKEN": {
+        "description": "API token for Vercel Sandbox authentication",
+        "prompt": "Vercel API token",
+        "url": "https://vercel.com/account/tokens",
+        "password": True,
+        "category": "setting",
+        "advanced": True,
+    },
+    "VERCEL_PROJECT_ID": {
+        "description": "Vercel project ID used with the Sandbox API token flow",
+        "prompt": "Vercel project ID",
+        "url": "https://vercel.com/docs/vercel-sandbox",
+        "password": False,
+        "category": "setting",
+        "advanced": True,
+    },
+    "VERCEL_TEAM_ID": {
+        "description": "Vercel team ID used with the Sandbox API token flow",
+        "prompt": "Vercel team ID",
+        "url": "https://vercel.com/docs/vercel-sandbox",
+        "password": False,
+        "category": "setting",
+        "advanced": True,
     },
     "HERMES_MAX_ITERATIONS": {
         "description": "Maximum tool-calling iterations per conversation (default: 90)",
@@ -3197,6 +3231,31 @@ def redact_key(key: str) -> str:
     return key[:4] + "..." + key[-4:]
 
 
+def _format_vercel_credentials_status(
+    *,
+    vercel_oidc: str,
+    vercel_token: str,
+    vercel_project: str,
+    vercel_team: str,
+) -> str:
+    """Describe the configured Vercel credential mode and any missing fields."""
+    if vercel_oidc:
+        return "OIDC token configured"
+    if vercel_token and vercel_project and vercel_team:
+        return "API token + project/team configured"
+
+    missing = []
+    if not vercel_token:
+        missing.append("VERCEL_TOKEN")
+    if not vercel_project:
+        missing.append("VERCEL_PROJECT_ID")
+    if not vercel_team:
+        missing.append("VERCEL_TEAM_ID")
+    if len(missing) < 3:
+        return f"partial API token config; missing {', '.join(missing)}"
+    return "(not set)"
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -3270,6 +3329,21 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'vercel_sandbox':
+        print(
+            f"  Runtime:      {terminal.get('vercel_runtime', DEFAULT_CONFIG['terminal']['vercel_runtime'])}"
+        )
+        vercel_oidc = get_env_value('VERCEL_OIDC_TOKEN')
+        vercel_token = get_env_value('VERCEL_TOKEN')
+        vercel_project = get_env_value('VERCEL_PROJECT_ID')
+        vercel_team = get_env_value('VERCEL_TEAM_ID')
+        cred_status = _format_vercel_credentials_status(
+            vercel_oidc=vercel_oidc,
+            vercel_token=vercel_token,
+            vercel_project=vercel_project,
+            vercel_team=vercel_team,
+        )
+        print(f"  Credentials:  {cred_status}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -3407,6 +3481,7 @@ def set_config_value(key: str, value: str):
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
+        'VERCEL_PROJECT_ID', 'VERCEL_TEAM_ID',
         'TINKER_API_KEY',
     ]
     
@@ -3462,6 +3537,7 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
