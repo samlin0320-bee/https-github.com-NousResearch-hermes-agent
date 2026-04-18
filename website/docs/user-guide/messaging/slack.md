@@ -267,10 +267,10 @@ Set to `false` if you want a collaborative mode where the entire channel shares 
 
 ```yaml
 slack:
-  # Require @mention in channels (this is the default behavior;
-  # the Slack adapter enforces @mention gating in channels regardless,
-  # but you can set this explicitly for consistency with other platforms)
-  require_mention: true
+  # Require @mention on every thread follow-up in channels.
+  # Default false preserves Slack's current behavior:
+  # once Hermes is active in a thread, follow-ups can omit the mention.
+  thread_followups_require_mention: false
 
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
@@ -283,7 +283,7 @@ slack:
 ```
 
 :::info
-Unlike Discord and Telegram, Slack does not have a `free_response_channels` equivalent. The Slack adapter requires `@mention` to start a conversation in channels. However, once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs, the bot always responds without needing a mention.
+Slack does not have a `free_response_channels` equivalent. By default, Hermes requires `@mention` to start a conversation in channels, but once Hermes is active in a thread, subsequent thread replies do not require a mention. Set `slack.thread_followups_require_mention: true` or `SLACK_THREAD_FOLLOWUPS_REQUIRE_MENTION=true` if you want every thread reply to explicitly mention the bot. In DMs, the bot always responds without needing a mention.
 :::
 
 ### Unauthorized User Handling
@@ -323,7 +323,7 @@ stt_enabled: true
 
 # Slack-specific settings
 slack:
-  require_mention: true
+  thread_followups_require_mention: false
   unauthorized_dm_behavior: "pair"
 
 # Platform config
