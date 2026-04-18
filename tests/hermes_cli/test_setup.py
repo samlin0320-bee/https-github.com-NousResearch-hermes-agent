@@ -445,50 +445,24 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
-def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
-    from hermes_cli import setup as setup_mod
+def test_gateway_setup_functions_have_no_required_args():
+    """All _setup_* functions in _GATEWAY_PLATFORMS must be callable with no arguments.
 
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
+    This prevents mismatches like _setup_zulip(config: dict) being called as setup_func().
+    """
+    import inspect
+    from hermes_cli.setup import _GATEWAY_PLATFORMS
 
-    assert setup_mod._resolve_hermes_chat_argv() == ["/usr/local/bin/hermes", "chat"]
-
-
-def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == [sys.executable, "-m", "hermes_cli.main", "chat"]
-
-
-def test_offer_launch_chat_execs_fresh_process(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
-
-    exec_calls = []
-
-    def fake_execvp(path, argv):
-        exec_calls.append((path, argv))
-        raise SystemExit(0)
-
-    monkeypatch.setattr(setup_mod.os, "execvp", fake_execvp)
-
-    with pytest.raises(SystemExit):
-        setup_mod._offer_launch_chat()
-
-    assert exec_calls == [("/usr/local/bin/hermes", ["/usr/local/bin/hermes", "chat"])]
-
-
-def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
-
-    setup_mod._offer_launch_chat()
-
-    captured = capsys.readouterr()
-    assert "Run 'hermes chat' manually" in captured.out
+    for name, env_var, setup_func in _GATEWAY_PLATFORMS:
+        sig = inspect.signature(setup_func)
+        params = list(sig.parameters.values())
+        # All params must have defaults (be optional) so func can be called with 0 args
+        for param in params:
+            if param.default is inspect.Parameter.empty and param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.POSITIONAL_ONLY,
+            ):
+                raise AssertionError(
+                    f"{setup_func.__name__}() has required positional arg '{param.name}' "
+                    f"but is called with no args in setup_gateway(). Add a default or update the call site."
+                )

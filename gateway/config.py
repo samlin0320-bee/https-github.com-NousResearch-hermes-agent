@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    ZULIP = "zulip"
 
 
 @dataclass
@@ -313,6 +314,9 @@ class GatewayConfig:
                 connected.append(platform)
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
+                connected.append(platform)
+            # Zulip uses extra dict for site credentials
+            elif platform == Platform.ZULIP and config.extra.get("site_url"):
                 connected.append(platform)
             # DingTalk uses client_id/client_secret from config.extra or env vars
             elif platform == Platform.DINGTALK and (
@@ -783,6 +787,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
         Platform.WEIXIN: "WEIXIN_TOKEN",
+        Platform.ZULIP: "ZULIP_API_KEY",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -1248,6 +1253,37 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
+
+    # Zulip
+    zulip_api_key = os.getenv("ZULIP_API_KEY")
+    zulip_email = os.getenv("ZULIP_BOT_EMAIL")
+    zulip_site = os.getenv("ZULIP_SITE_URL")
+    if zulip_api_key:
+        if not zulip_email:
+            logger.warning("ZULIP_API_KEY set but ZULIP_BOT_EMAIL is missing")
+        if not zulip_site:
+            logger.warning("ZULIP_API_KEY set but ZULIP_SITE_URL is missing")
+        if Platform.ZULIP not in config.platforms:
+            config.platforms[Platform.ZULIP] = PlatformConfig()
+        config.platforms[Platform.ZULIP].enabled = True
+        config.platforms[Platform.ZULIP].token = zulip_api_key
+        config.platforms[Platform.ZULIP].extra.update({
+            "site_url": zulip_site or "",
+            "bot_email": zulip_email or "",
+        })
+    zulip_default_stream = os.getenv("ZULIP_DEFAULT_STREAM")
+    if zulip_default_stream:
+        config.platforms[Platform.ZULIP].extra["default_stream"] = zulip_default_stream
+    zulip_home_topic = os.getenv("ZULIP_HOME_TOPIC")
+    if zulip_home_topic:
+        config.platforms[Platform.ZULIP].extra["home_topic"] = zulip_home_topic
+    zulip_home = os.getenv("ZULIP_HOME_CHANNEL")
+    if zulip_home:
+        config.platforms[Platform.ZULIP].home_channel = HomeChannel(
+            platform=Platform.ZULIP,
+            chat_id=zulip_home,
+            name=os.getenv("ZULIP_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

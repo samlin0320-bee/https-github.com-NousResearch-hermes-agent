@@ -12,6 +12,7 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _build_from_sessions,
+    _session_entry_name,
     DIRECTORY_PATH,
 )
 

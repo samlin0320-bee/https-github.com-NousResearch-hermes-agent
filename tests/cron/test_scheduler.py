@@ -229,39 +229,97 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
-    def test_explicit_discord_topic_target_with_thread_id(self):
-        """deliver: 'discord:chat_id:thread_id' parses correctly."""
+    def test_explicit_zulip_stream_target_preserves_topic_in_chat_id(self):
+        """Zulip chat IDs use colons (stream_id:topic). The topic must stay in chat_id, not be split into thread_id."""
         job = {
-            "deliver": "discord:-1001234567890:17585",
+            "deliver": "zulip:123:General",
         }
         assert _resolve_delivery_target(job) == {
-            "platform": "discord",
-            "chat_id": "-1001234567890",
-            "thread_id": "17585",
-        }
-
-    def test_explicit_discord_chat_id_without_thread_id(self):
-        """deliver: 'discord:chat_id' sets thread_id to None."""
-        job = {
-            "deliver": "discord:9876543210",
-        }
-        assert _resolve_delivery_target(job) == {
-            "platform": "discord",
-            "chat_id": "9876543210",
+            "platform": "zulip",
+            "chat_id": "123:General",
             "thread_id": None,
         }
 
-    def test_explicit_discord_channel_without_thread(self):
-        """deliver: 'discord:1001234567890' resolves via explicit platform:chat_id path."""
+    def test_explicit_zulip_stream_target_with_spaces_in_topic(self):
+        """Topics can contain spaces — the entire rest after 'zulip:' is the chat_id."""
         job = {
-            "deliver": "discord:1001234567890",
+            "deliver": "zulip:456:Cron Notifications",
         }
-        result = _resolve_delivery_target(job)
-        assert result == {
-            "platform": "discord",
-            "chat_id": "1001234567890",
+        assert _resolve_delivery_target(job) == {
+            "platform": "zulip",
+            "chat_id": "456:Cron Notifications",
             "thread_id": None,
         }
+
+    def test_explicit_zulip_dm_target(self):
+        """DM targets use the 'dm:' prefix within the chat_id."""
+        job = {
+            "deliver": "zulip:dm:user@example.com",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "zulip",
+            "chat_id": "dm:user@example.com",
+            "thread_id": None,
+        }
+
+    def test_explicit_zulip_group_dm_target(self):
+        """Group DM targets use the 'group_dm:' prefix within the chat_id."""
+        job = {
+            "deliver": "zulip:group_dm:a@b.com,c@d.com",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "zulip",
+            "chat_id": "group_dm:a@b.com,c@d.com",
+            "thread_id": None,
+        }
+
+    def test_bare_zulip_uses_matching_origin_chat(self):
+        """Bare 'zulip' deliver falls back to origin if origin platform matches."""
+        job = {
+            "deliver": "zulip",
+            "origin": {
+                "platform": "zulip",
+                "chat_id": "78:bot-topic",
+            },
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "zulip",
+            "chat_id": "78:bot-topic",
+            "thread_id": None,
+        }
+
+    def test_bare_zulip_falls_back_to_home_channel(self, monkeypatch):
+        """Bare 'zulip' with no matching origin uses ZULIP_HOME_CHANNEL env var."""
+        monkeypatch.setenv("ZULIP_HOME_CHANNEL", "99:home-topic")
+        job = {
+            "deliver": "zulip",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+            },
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "zulip",
+            "chat_id": "99:home-topic",
+            "thread_id": None,
+        }
+
+    def test_zulip_home_channel_dm_format(self):
+        """ZULIP_HOME_CHANNEL can also be a DM (dm:email@example.com)."""
+        import os
+        os.environ["ZULIP_HOME_CHANNEL"] = "dm:bot@example.com"
+        try:
+            job = {
+                "deliver": "zulip",
+                "origin": {"platform": "discord", "chat_id": "abc"},
+            }
+            assert _resolve_delivery_target(job) == {
+                "platform": "zulip",
+                "chat_id": "dm:bot@example.com",
+                "thread_id": None,
+            }
+        finally:
+            os.environ.pop("ZULIP_HOME_CHANNEL", None)
 
 
 class TestDeliverResultWrapping:

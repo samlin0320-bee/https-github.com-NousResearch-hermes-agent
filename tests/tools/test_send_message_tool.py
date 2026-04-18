@@ -12,10 +12,12 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
+    _parse_zulip_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
     _send_telegram,
     _send_to_platform,
+    _send_zulip,
     send_message_tool,
 )
 
@@ -1651,3 +1653,308 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
+
+
+# ---------------------------------------------------------------------------
+# Tests for Zulip target parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseZulipTargetRef:
+    """_parse_zulip_target_ref handles dm, group_dm, stream, and implicit DM targets."""
+
+    def test_dm_prefix(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref("dm:user@example.com")
+        assert chat_id == "dm:user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_group_dm_prefix(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref(
+            "group_dm:a@b.com,c@d.com"
+        )
+        assert chat_id == "group_dm:a@b.com,c@d.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_stream_id_topic(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref("123:General")
+        assert chat_id == "123:General"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_stream_id_topic_with_spaces(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref("42:Some Topic Name")
+        assert chat_id == "42:Some Topic Name"
+        assert is_explicit is True
+
+    def test_implicit_dm_email(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref(
+            "alice@example.com"
+        )
+        assert chat_id == "dm:alice@example.com"
+        assert is_explicit is True
+
+    def test_invalid_format_returns_false(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref(
+            "not-an-email-or-stream"
+        )
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_dm_without_at_sign_is_not_implicit_dm(self):
+        chat_id, thread_id, is_explicit = _parse_zulip_target_ref("just-a-string")
+        assert is_explicit is False
+
+
+# ---------------------------------------------------------------------------
+# Tests for _send_zulip media handling
+# ---------------------------------------------------------------------------
+
+
+class TestSendMessageToolZulip:
+    """Tests for Zulip media file handling in _send_zulip."""
+
+    def _make_zulip_mod(self):
+        client_instance = MagicMock()
+        client_instance.send_message = MagicMock(
+            return_value={"result": "success", "id": 999}
+        )
+        client_instance.upload_file = MagicMock(
+            return_value={"result": "success", "uri": "/user_uploads/1/ab/cd/img.png"}
+        )
+        zulip_mod = MagicMock()
+        zulip_mod.Client = MagicMock(return_value=client_instance)
+        return zulip_mod, client_instance
+
+    def test_zulip_sends_stream_message(self, monkeypatch):
+        zulip_mod, client = self._make_zulip_mod()
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="test-api-key",
+            extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+        )
+
+        result = asyncio.run(
+            _send_zulip(pconfig, "123:General", "Hello Zulip")
+        )
+
+        assert result["success"] is True
+        assert result["platform"] == "zulip"
+        assert result["message_id"] == "999"
+        call_args = client.send_message.call_args[0][0]
+        assert call_args["type"] == "stream"
+        assert call_args["to"] == "123"
+        assert call_args["topic"] == "General"
+
+    def test_zulip_sends_dm_message(self, monkeypatch):
+        zulip_mod, client = self._make_zulip_mod()
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="test-api-key",
+            extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+        )
+
+        result = asyncio.run(
+            _send_zulip(pconfig, "dm:user@example.com", "Hello DM")
+        )
+
+        assert result["success"] is True
+        call_args = client.send_message.call_args[0][0]
+        assert call_args["type"] == "private"
+        assert call_args["to"] == ["user@example.com"]
+
+    def test_zulip_sends_group_dm(self, monkeypatch):
+        zulip_mod, client = self._make_zulip_mod()
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="test-api-key",
+            extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+        )
+
+        result = asyncio.run(
+            _send_zulip(
+                pconfig,
+                "group_dm:a@b.com,c@d.com",
+                "Hello group",
+            )
+        )
+
+        assert result["success"] is True
+        call_args = client.send_message.call_args[0][0]
+        assert call_args["type"] == "private"
+        assert call_args["to"] == ["a@b.com", "c@d.com"]
+
+    def test_zulip_upload_media_inline(self, tmp_path, monkeypatch):
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        zulip_mod, client = self._make_zulip_mod()
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="test-api-key",
+            extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+        )
+
+        result = asyncio.run(
+            _send_zulip(
+                pconfig,
+                "123:General",
+                "See this",
+                media_files=[(str(img), False)],
+            )
+        )
+
+        assert result["success"] is True
+        client.upload_file.assert_called_once()
+        sent_content = client.send_message.call_args[0][0]["content"]
+        assert "![photo.png](/user_uploads/1/ab/cd/img.png)" in sent_content
+        assert "See this" in sent_content
+
+    def test_zulip_missing_media_warning(self, monkeypatch):
+        zulip_mod, client = self._make_zulip_mod()
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="test-api-key",
+            extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+        )
+
+        result = asyncio.run(
+            _send_zulip(
+                pconfig,
+                "123:General",
+                "Hello",
+                media_files=[("/nonexistent/file.png", False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not found" in w for w in result["warnings"])
+        client.upload_file.assert_not_called()
+
+    def test_zulip_no_config_returns_error(self, monkeypatch):
+        zulip_mod, _ = self._make_zulip_mod()
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="",
+            extra={},
+        )
+
+        result = asyncio.run(
+            _send_zulip(pconfig, "123:General", "Hello")
+        )
+
+        assert "error" in result
+        assert "not configured" in result["error"]
+
+    def test_zulip_send_failure_returns_error(self, monkeypatch):
+        client_instance = MagicMock()
+        client_instance.send_message = MagicMock(
+            return_value={"result": "error", "msg": "Stream not found"}
+        )
+        zulip_mod = MagicMock()
+        zulip_mod.Client = MagicMock(return_value=client_instance)
+        monkeypatch.setitem(sys.modules, "zulip", zulip_mod)
+
+        pconfig = SimpleNamespace(
+            enabled=True,
+            token="test-api-key",
+            extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+        )
+
+        result = asyncio.run(
+            _send_zulip(pconfig, "123:General", "Hello")
+        )
+
+        assert "error" in result
+        assert "Stream not found" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for Zulip platform routing in _send_to_platform
+# ---------------------------------------------------------------------------
+
+
+class TestSendToPlatformZulip:
+    """_send_to_platform routes Zulip messages correctly."""
+
+    def test_zulip_routes_to_send_zulip(self):
+        send_mock = AsyncMock(
+            return_value={"success": True, "platform": "zulip", "chat_id": "123:General", "message_id": "42"}
+        )
+
+        with patch("tools.send_message_tool._send_zulip", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.ZULIP,
+                    SimpleNamespace(
+                        enabled=True,
+                        token="key",
+                        extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+                    ),
+                    "123:General",
+                    "hello zulip",
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+
+    def test_zulip_long_message_is_chunked(self):
+        send_mock = AsyncMock(
+            return_value={"success": True, "platform": "zulip", "chat_id": "123:General", "message_id": "1"}
+        )
+        long_msg = "word " * 2000
+
+        with patch("tools.send_message_tool._send_zulip", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.ZULIP,
+                    SimpleNamespace(
+                        enabled=True,
+                        token="key",
+                        extra={"site_url": "https://test.zulipchat.com", "bot_email": "bot@test.com"},
+                    ),
+                    "123:General",
+                    long_msg,
+                )
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_count >= 2
+
+
+class TestParseTargetRefZulip:
+    """_parse_target_ref delegates to _parse_zulip_target_ref for zulip platform."""
+
+    def test_zulip_dm_target(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("zulip", "dm:user@example.com")
+        assert chat_id == "dm:user@example.com"
+        assert is_explicit is True
+
+    def test_zulip_stream_target(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("zulip", "42:General")
+        assert chat_id == "42:General"
+        assert is_explicit is True
+
+    def test_zulip_implicit_email(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("zulip", "alice@example.com")
+        assert chat_id == "dm:alice@example.com"
+        assert is_explicit is True
+
+    def test_zulip_invalid_returns_false(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("zulip", "not-valid")
+        assert is_explicit is False

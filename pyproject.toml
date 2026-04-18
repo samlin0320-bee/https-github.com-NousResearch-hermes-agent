@@ -32,6 +32,7 @@ dependencies = [
   "fal-client>=0.13.1,<1",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts>=7.2.7,<8",
+  "faster-whisper>=1.0.0,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
 ]
@@ -46,13 +47,7 @@ slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
 matrix = ["mautrix[encryption]>=0.20,<1", "Markdown>=3.6,<4", "aiosqlite>=0.20", "asyncpg>=0.29"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
-voice = [
-  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
-  # so keep it out of the base install for source-build packagers like Homebrew.
-  "faster-whisper>=1.0.0,<2",
-  "sounddevice>=0.4.6,<1",
-  "numpy>=1.24.0,<3",
-]
+voice = ["sounddevice>=0.4.6,<1", "numpy>=1.24.0,<3"]
 pty = [
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
@@ -78,6 +73,7 @@ termux = [
 ]
 dingtalk = ["dingtalk-stream>=0.20,<1", "alibabacloud-dingtalk>=2.0.0", "qrcode>=7.0,<8"]
 feishu = ["lark-oapi>=1.5.3,<2", "qrcode>=7.0,<8"]
+zulip = ["zulip>=0.9.0,<1"]
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git@c20c85256e5a45ad31edf8b7276e9c5ee1995a30",
@@ -91,10 +87,6 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
-  # matrix: python-olm (required by matrix-nio[e2e]) is upstream-broken on
-  # modern macOS (archived libolm, C++ errors with Clang 21+).  On Linux the
-  # [matrix] extra's own marker pulls in the [e2e] variant automatically.
-  "hermes-agent[matrix]; sys_platform == 'linux'",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
