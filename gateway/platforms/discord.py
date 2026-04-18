@@ -2185,7 +2185,7 @@ class DiscordAdapter(BasePlatformAdapter):
         skill name and its description.
         """
         try:
-            from hermes_cli.commands import discord_skill_commands_by_category
+            from hermes_cli.commands import discord_skill_autocomplete_entries
 
             existing_names = set()
             try:
@@ -2193,16 +2193,11 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-            # Reuse the existing collector for consistent filtering
-            # (per-platform disabled, hub-excluded, name clamping), then
-            # flatten — the category grouping was only useful for the
-            # nested layout.
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
+            # Use the flat collector directly so autocomplete can expose the
+            # full filtered catalog without the old 25x25 subgroup cap.
+            entries, hidden = discord_skill_autocomplete_entries(
                 reserved_names=existing_names,
             )
-            entries: list[tuple[str, str, str]] = list(uncategorized)
-            for cat_skills in categories.values():
-                entries.extend(cat_skills)
 
             if not entries:
                 return
