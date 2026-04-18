@@ -8513,6 +8513,8 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            # Track end-to-end turn duration for streaming footer metadata.
+            _stream_started_at = time.monotonic()
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -8555,17 +8557,25 @@ class GatewayRunner:
                         # streaming text on Matrix, but suppress the cursor.
                         if source.platform == Platform.MATRIX:
                             _effective_cursor = ""
-                        _consumer_cfg = StreamConsumerConfig(
-                            edit_interval=_scfg.edit_interval,
-                            buffer_threshold=_scfg.buffer_threshold,
-                            cursor=_effective_cursor,
-                        )
-                        _stream_consumer = GatewayStreamConsumer(
-                            adapter=_adapter,
-                            chat_id=source.chat_id,
-                            config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
-                        )
+                        _consumer_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else {}
+                        if event_message_id:
+                            _consumer_metadata["source_message_id"] = event_message_id
+                        _consumer_metadata = _consumer_metadata or None
+                        _adapter_factory = getattr(_adapter, "create_stream_consumer", None)
+                        if callable(_adapter_factory):
+                            _stream_consumer = _adapter_factory(source.chat_id, metadata=_consumer_metadata)
+                        if _stream_consumer is None:
+                            _consumer_cfg = StreamConsumerConfig(
+                                edit_interval=_scfg.edit_interval,
+                                buffer_threshold=_scfg.buffer_threshold,
+                                cursor=_effective_cursor,
+                            )
+                            _stream_consumer = GatewayStreamConsumer(
+                                adapter=_adapter,
+                                chat_id=source.chat_id,
+                                config=_consumer_cfg,
+                                metadata=_consumer_metadata,
+                            )
                         if _want_stream_deltas:
                             _stream_delta_cb = _stream_consumer.on_delta
                         stream_consumer_holder[0] = _stream_consumer
@@ -8889,10 +8899,6 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
-            # Signal the stream consumer that the agent is done
-            if _stream_consumer is not None:
-                _stream_consumer.finish()
-            
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -8906,6 +8912,20 @@ class GatewayRunner:
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _elapsed_seconds = max(0.0, time.monotonic() - _stream_started_at)
+
+            if _stream_consumer is not None:
+                try:
+                    if hasattr(_stream_consumer, "set_completion_meta"):
+                        _stream_consumer.set_completion_meta(
+                            final_text=final_response,
+                            model_label=_resolved_model,
+                            elapsed_seconds=_elapsed_seconds,
+                            footer_text=None,
+                        )
+                except Exception:
+                    pass
+                _stream_consumer.finish()
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
