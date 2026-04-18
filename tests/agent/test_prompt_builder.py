@@ -990,6 +990,9 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_grok(self):
         assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_qwen(self):
+        assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
@@ -1002,6 +1005,8 @@ class TestOpenAIModelExecutionGuidance:
         assert "tool_persistence" in text
         assert "retry" in text
         assert "empty" in text or "partial" in text
+        assert "exact file path" in text
+        assert "total_count=0" in text
 
     def test_guidance_covers_prerequisite_checks(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
@@ -1032,6 +1037,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 
