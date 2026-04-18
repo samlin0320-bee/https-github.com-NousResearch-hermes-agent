@@ -1949,6 +1949,36 @@ class AIAgent:
         """
         return self.quiet_mode and not self.tool_progress_callback
 
+    def _should_suppress_gateway_lifecycle_status(self, message: str) -> bool:
+        """Return True when a lifecycle status is too noisy for chat gateways.
+
+        CLI users still see every lifecycle event through ``_vprint``. Messaging
+        platforms, however, should not be flooded with internal retry/fallback
+        chatter when a final assistant response will summarize the failure.
+        """
+        raw_platform = getattr(self, "platform", "") or ""
+        platform = getattr(raw_platform, "value", raw_platform)
+        platform = str(platform).strip().lower()
+        if not platform or platform == "cli":
+            return False
+        text = (message or "").strip()
+        if not text:
+            return False
+
+        noisy_prefixes = (
+            "⚠️ Rate limited — switching to fallback provider...",
+            "💸 Provider credits/balance exhausted — switching to fallback provider...",
+            "⚠️ Empty/malformed response — switching to fallback...",
+            "🔄 Primary model failed — switching to fallback:",
+            "⏱️ Rate limit reached. Waiting",
+            "❌ Rate limited after ",
+        )
+        if any(text.startswith(prefix) for prefix in noisy_prefixes):
+            return True
+        if text.startswith("⚠️ Max retries (") and "trying fallback" in text.lower():
+            return True
+        return False
+
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
@@ -1964,6 +1994,8 @@ class AIAgent:
         except Exception:
             pass
         if self.status_callback:
+            if self._should_suppress_gateway_lifecycle_status(message):
+                return
             try:
                 self.status_callback("lifecycle", message)
             except Exception:
@@ -10334,7 +10366,10 @@ class AIAgent:
                         pool = self._credential_pool
                         pool_may_recover = pool is not None and pool.has_available()
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if classified.reason == FailoverReason.billing:
+                                self._emit_status("💸 Provider credits/balance exhausted — switching to fallback provider...")
+                            else:
+                                self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback():
                                 retry_count = 0
                                 compression_attempts = 0
@@ -10578,7 +10613,6 @@ class AIAgent:
                             and not classified.should_compress
                             and classified.reason not in (
                                 FailoverReason.rate_limit,
-                                FailoverReason.billing,
                                 FailoverReason.overloaded,
                                 FailoverReason.context_overflow,
                                 FailoverReason.payload_too_large,
@@ -10609,7 +10643,7 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors
-                        if classified.is_auth or classified.reason == FailoverReason.billing:
+                        if classified.is_auth:
                             if _provider == "openai-codex" and status_code == 401:
                                 self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
@@ -10621,6 +10655,12 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
                                 if "openrouter" in str(_base).lower():
                                     self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                        elif classified.reason == FailoverReason.billing:
+                            self._vprint(f"{self.log_prefix}   💡 Provider balance/credits appear exhausted for this request.", force=True)
+                            if "openrouter" in str(_base).lower():
+                                self._vprint(f"{self.log_prefix}      • Top up credits: https://openrouter.ai/settings/credits", force=True)
+                            elif _provider == "minimax":
+                                self._vprint(f"{self.log_prefix}      • Check MiniMax account balance / billing before retrying.", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
