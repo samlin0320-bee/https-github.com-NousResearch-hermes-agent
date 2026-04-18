@@ -2145,13 +2145,29 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     handler = _make_simple_handler(cmd_def.name)
 
-                auto_cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=desc,
-                    callback=handler,
-                )
                 try:
-                    tree.add_command(auto_cmd)
+                    if hasattr(discord.app_commands, "Command"):
+                        auto_cmd = discord.app_commands.Command(
+                            name=discord_name,
+                            description=desc,
+                            callback=handler,
+                        )
+                        tree.add_command(auto_cmd)
+                    else:
+                        # Lightweight test doubles may not expose
+                        # ``discord.app_commands.Command``. Register a tiny
+                        # command object with the attributes our tests and fake
+                        # trees rely on.
+                        fallback_cmd = type(
+                            "_FallbackDiscordCommand",
+                            (),
+                            {
+                                "name": discord_name,
+                                "description": desc,
+                                "callback": staticmethod(handler),
+                            },
+                        )()
+                        tree.add_command(fallback_cmd)
                     already_registered.add(discord_name)
                 except Exception:
                     # Silently skip commands that fail registration (e.g.
@@ -2277,7 +2293,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 callback=_skill_handler,
             )
             tree.add_command(cmd)
-
             logger.info(
                 "[%s] Registered /skill command with %d skill(s) via autocomplete",
                 self.name, len(entries),

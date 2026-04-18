@@ -1122,9 +1122,16 @@ def detect_provider_for_model(
             except Exception:
                 pass
 
-        # Always return the direct provider match.  If credentials are
-        # missing, the client init will give a clear error rather than
-        # silently routing through the wrong provider (#10300).
+        if has_creds:
+            return (direct_match, name)
+
+        # Without direct-provider credentials, prefer an OpenRouter slug when
+        # one exists so bare/shared model names still resolve to a usable
+        # provider rather than a guaranteed auth failure.
+        or_slug = _find_openrouter_slug(name)
+        if or_slug:
+            return ("openrouter", or_slug)
+
         return (direct_match, name)
 
     # --- Step 2: check OpenRouter catalog ---
