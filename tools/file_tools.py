@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 from tools.binary_extensions import has_binary_extension
@@ -110,31 +111,62 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_PATH_ALLOWLIST = (
-    # macOS per-user temp directory (what ``tempfile.gettempdir()`` returns
-    # after symlink resolution).  User-writable by design.
-    "/private/var/folders/",
-    # ``/tmp`` on macOS is a symlink into ``/private/tmp/``.
-    "/private/tmp/",
+    # macOS per-user temp directory.  ``tempfile.gettempdir()`` returns
+    # the un-resolved ``/var/folders/...`` form; ``os.path.realpath``
+    # expands it to ``/private/var/folders/...``.  Both forms must be in
+    # the allowlist so the AND guard in
+    # ``_is_allowlisted_sensitive_path`` can confirm each independently-
+    # sanitised path form lives under a user-writable prefix.
+    "/private/var/folders/",  # realpath-resolved form
+    "/var/folders/",           # normpath-unresolved form
+    # ``/tmp`` on macOS is a symlink into ``/private/tmp/``.  Same
+    # dual-form rationale.
+    "/private/tmp/",           # realpath-resolved form
+    "/tmp/",                   # normpath-unresolved form
 )
+# The allowlist is macOS-specific: on Linux / Windows these literal
+# ``/private/...`` paths are not an OS convention, so the previous
+# behaviour (block if it matches the sensitive prefix) is preserved.
+_ALLOWLIST_ACTIVE = sys.platform == "darwin"
+
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
 def _is_allowlisted_sensitive_path(resolved: str, normalized: str) -> bool:
     """Return True for paths that look sensitive by prefix but are actually
-    user-writable (macOS temp directories, primarily)."""
-    for allowed in _SENSITIVE_PATH_ALLOWLIST:
-        if resolved.startswith(allowed) or normalized.startswith(allowed):
-            return True
-    return False
+    user-writable (macOS temp directories, primarily).
+
+    Requires *both* ``resolved`` and ``normalized`` to start with a
+    (potentially different) allowlisted prefix — the AND guard defeats
+    a symlink-substitution bypass where an attacker creates
+    ``/private/var/folders/evil -> /etc/sudoers`` and writes to the
+    symlinked name: ``resolved`` points at ``/etc/sudoers`` and fails
+    its allowlist check, so the path is blocked despite the allowlisted
+    ``normalized``.  Both forms are sanitised (``normalized`` via
+    ``normpath`` / ``expanduser``, ``resolved`` via ``realpath`` or,
+    on exception, a fall-back to ``normalized``), so no raw attacker-
+    controlled string reaches this check.
+    """
+    if not _ALLOWLIST_ACTIVE:
+        return False
+    resolved_ok = any(resolved.startswith(a) for a in _SENSITIVE_PATH_ALLOWLIST)
+    if not resolved_ok:
+        return False
+    normalized_ok = any(normalized.startswith(a) for a in _SENSITIVE_PATH_ALLOWLIST)
+    return normalized_ok
 
 
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    normalized = os.path.normpath(os.path.expanduser(filepath))
     try:
         resolved = os.path.realpath(os.path.expanduser(filepath))
     except (OSError, ValueError):
-        resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+        # Fail closed: never fall back to the raw, un-normalised
+        # ``filepath``.  The raw form can carry ``..`` segments that slip
+        # through prefix matching — use the normalised form, which has
+        # already been sanitised via ``normpath``/``expanduser``.
+        resolved = normalized
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
