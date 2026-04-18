@@ -874,7 +874,17 @@ class AIAgent:
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
-        self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
+
+        # Read cache_ttl from config; default to 5m (1.25x write cost)
+        self._cache_ttl = "5m"
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            cache_ttl = config.get("prompt_cache_ttl")
+            if cache_ttl is not None:
+                self._cache_ttl = str(cache_ttl)
+        except Exception:
+            pass
         
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
