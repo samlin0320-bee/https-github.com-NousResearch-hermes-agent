@@ -92,11 +92,40 @@ def _is_blocked_device(filepath: str) -> bool:
 
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
+#
+# ``/private/etc/`` and ``/private/var/`` exist to catch the macOS case where
+# ``/etc`` and ``/var`` are symlinks into ``/private`` — they were added in
+# 311dac19 to close a ``/private/etc`` symlink bypass of ``/etc``.  The broad
+# ``/private/var/`` prefix has a false-positive hazard, though: on macOS the
+# per-user temporary directory (``tempfile.gettempdir()``) resolves under
+# ``/private/var/folders/...``, and so does ``/tmp`` (symlink to
+# ``/private/tmp/``).  Blocking those blocks legitimate, documented,
+# user-writable spaces and breaks both tests and real workflows.  The
+# allowlist below carves out exactly those macOS-temp subtrees — nothing
+# else under ``/private/var/`` (notably ``/private/var/db/``,
+# ``/private/var/log/``, ``/private/var/root/``, ``/private/var/mail/``,
+# ``/private/var/spool/``) is exempted.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
     "/private/etc/", "/private/var/",
 )
+_SENSITIVE_PATH_ALLOWLIST = (
+    # macOS per-user temp directory (what ``tempfile.gettempdir()`` returns
+    # after symlink resolution).  User-writable by design.
+    "/private/var/folders/",
+    # ``/tmp`` on macOS is a symlink into ``/private/tmp/``.
+    "/private/tmp/",
+)
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+
+
+def _is_allowlisted_sensitive_path(resolved: str, normalized: str) -> bool:
+    """Return True for paths that look sensitive by prefix but are actually
+    user-writable (macOS temp directories, primarily)."""
+    for allowed in _SENSITIVE_PATH_ALLOWLIST:
+        if resolved.startswith(allowed) or normalized.startswith(allowed):
+            return True
+    return False
 
 
 def _check_sensitive_path(filepath: str) -> str | None:
@@ -112,6 +141,10 @@ def _check_sensitive_path(filepath: str) -> str | None:
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
+            if _is_allowlisted_sensitive_path(resolved, normalized):
+                # Looks sensitive by prefix, but it's a documented
+                # user-writable location (e.g. macOS temp) — permit.
+                return None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
