@@ -186,6 +186,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ARCEEAI_API_KEY",),
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "gmi": ProviderConfig(
+        id="gmi",
+        name="GMI Cloud",
+        auth_type="api_key",
+        inference_base_url="https://api.gmi-serving.com/v1",
+        api_key_env_vars=("GMI_API_KEY",),
+        base_url_env_var="GMI_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -972,6 +980,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "arcee-ai": "arcee", "arceeai": "arcee",
+        "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
