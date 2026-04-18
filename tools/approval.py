@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -125,6 +126,12 @@ DANGEROUS_PATTERNS = [
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Script execution from writable locations - bypasses the -e/-c flag patterns.
+    # Catches python3 /tmp/evil.py, bash ~/run.sh, node ./exploit.js etc.
+    # The script content is invisible to DANGEROUS_PATTERNS and can contain arbitrary code.
+    (r'\b(python[23]?|perl|ruby|node|bash|sh|zsh|ksh)\s+(?:(?:-[a-zA-Z0-9]+\s+)*)?(?:(?:/tmp/|/var/tmp/|~/|\./)[^\s]+\.(?:py|sh|bash|zsh|ksh|rb|pl|js|lua)\b)', "execute script in writable location (/tmp, ~, ./)"),
+    # Direct execution of shell scripts in writable locations: ./foo.sh, ~/bar.sh
+    (r'(?:\./|~/)(?:[^\s/]+/)*[^\s]*\.(?:sh|bash|zsh|ksh)\b', "direct execution of shell script in writable location"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
@@ -190,7 +197,26 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
+    normalized = _normalize_command_for_detection(command)
+    command_lower = normalized.lower()
+
+    # Skip approval for user-configured trusted script paths.
+    # Extract actual file paths from the command via shlex, then check
+    # prefix membership — avoids substring bypasses like
+    #   python3 /tmp/evil.py --cfg=/opt/trusted/
+    # where "/opt/trusted/" would falsely match a naive substring check.
+    if _trusted_script_dirs:
+        try:
+            parts = shlex.split(normalized)
+        except ValueError:
+            parts = normalized.split()
+        for part in parts:
+            # Expand ~ in the token to match against expanded trusted paths
+            part_lower = os.path.expanduser(part).lower()
+            for trusted in _trusted_script_dirs:
+                if part_lower.startswith(trusted):
+                    return (False, None, None)
+
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = description
@@ -948,5 +974,34 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+# Trusted script directories — loaded from config, default empty (deny all)
+_trusted_script_dirs: list[str] = []
+
+
+def _load_trusted_scripts():
+    """Load user-configured trusted script paths from config.yaml.
+
+    Paths under ``approvals.trusted_scripts`` are exempted from dangerous
+    command detection so that management scripts (e.g. restart_hermes.sh)
+    can run without triggering approval prompts.
+
+    Default is empty — no paths are trusted unless explicitly configured.
+    """
+    global _trusted_script_dirs
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        approvals = config.get("approvals", {}) or {}
+        if isinstance(approvals, dict):
+            paths = approvals.get("trusted_scripts", []) or []
+        else:
+            paths = []
+        _trusted_script_dirs = [os.path.expanduser(p).lower() for p in paths if p]
+    except Exception as e:
+        logger.warning("Failed to load trusted_scripts from config: %s", e)
+        _trusted_script_dirs = []
+
+
 # Load permanent allowlist from config on module import
+_load_trusted_scripts()
 load_permanent_allowlist()
