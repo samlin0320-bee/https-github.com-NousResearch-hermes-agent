@@ -126,6 +126,40 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-pro",
         "grok-code-fast-1",
     ],
+    "ppq": [
+        # Curated PPQ list — mirrors the OpenRouter selection using PPQ's native IDs.
+        # PPQ uses shorter IDs for some providers (e.g. claude-opus-4.7 vs anthropic/claude-opus-4.7).
+        # Verified against live /v1/models catalog (329 models as of 2026-04-18).
+        "claude-opus-4.7",
+        "anthropic/claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "qwen/qwen3.6-plus",
+        "anthropic/claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-pro",
+        "gpt-5.4-nano",
+        "gpt-5.3-codex",
+        "google/gemini-3-pro-image-preview",
+        "gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
+        "xiaomi/mimo-v2-pro",
+        "z-ai/glm-5.1",
+        "z-ai/glm-5-turbo",
+        "z-ai/glm-5v-turbo",
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.7",
+        "minimax/minimax-m2.5",
+        "qwen/qwen3.5-plus-02-15",
+        "qwen/qwen3.5-35b-a3b",
+        "stepfun/step-3.5-flash",
+        "x-ai/grok-4.20",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "arcee-ai/trinity-large-thinking",
+        "arcee-ai/trinity-large-preview",
+    ],
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-flash-preview",
@@ -554,6 +588,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (free tier supported; no API key needed)"),
+    ProviderEntry("ppq",            "PPQ (PayPerQ)",            "PPQ (PayPerQ multi-provider gateway)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
@@ -581,6 +616,8 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "payperq": "ppq",
+    "ppq.ai": "ppq",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -1302,6 +1339,17 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             creds = resolve_nous_runtime_credentials()
             if creds:
                 live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "ppq":
+        # Try live PPQ /v1/models endpoint
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials("ppq")
+            if creds.get("api_key"):
+                live = fetch_api_models(creds["api_key"], creds["base_url"])
                 if live:
                     return live
         except Exception:
