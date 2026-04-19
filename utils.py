@@ -32,6 +32,13 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def _get_umask() -> int:
+    """Return the current process umask without permanently changing it."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Capture the permission bits of *path* if it exists, else ``None``."""
     try:
@@ -43,16 +50,17 @@ def _preserve_file_mode(path: Path) -> "int | None":
 def _restore_file_mode(path: Path, mode: "int | None") -> None:
     """Re-apply *mode* to *path* after an atomic replace.
 
-    ``tempfile.mkstemp`` creates files with 0o600 (owner-only).  After
-    ``os.replace`` swaps the temp file into place the target inherits
-    those restrictive permissions, breaking Docker / NAS volume mounts
-    that rely on broader permissions set by the user.  Calling this
-    right after ``os.replace`` restores the original permissions.
+    ``tempfile.mkstemp`` creates files with 0o600 (owner-only) and
+    ``os.replace`` preserves those bits.  When overwriting an existing
+    file, restore its prior permissions so Docker/NAS volume mounts
+    keep the broader permissions the user set.  When creating a new
+    file, apply ``0o666 & ~umask`` — the mode a plain ``open()`` would
+    have produced — so NixOS managed mode (umask 0007) yields 0o660
+    instead of 0o600, which would otherwise break ``/save``.
     """
-    if mode is None:
-        return
+    target_mode = mode if mode is not None else 0o666 & ~_get_umask()
     try:
-        os.chmod(path, mode)
+        os.chmod(path, target_mode)
     except OSError:
         pass
 
