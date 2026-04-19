@@ -887,7 +887,7 @@ class GatewayRunner:
                 model=model,
                 max_iterations=8,
                 quiet_mode=True,
-                skip_memory=True,  # Flush agent — no memory provider
+                skip_memory=False,  # Must init _memory_store so memory tool works
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
             )
