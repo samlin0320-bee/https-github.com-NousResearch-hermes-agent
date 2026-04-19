@@ -8826,6 +8826,64 @@ class HermesCLI:
             """Alt+Enter inserts a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
 
+        @kb.add('c-x', 'c-e')
+        def handle_ctrl_x_ctrl_e(event):
+            """Ctrl+X Ctrl+E: Open external editor (custom implementation)."""
+            import tempfile
+            import subprocess
+            import os
+            
+            # Get current buffer content
+            buff = event.current_buffer
+            text = buff.text
+            
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+                f.write(text)
+                temp_file = f.name
+            
+            # Get editor from environment variable
+            editor = os.environ.get('EDITOR') or os.environ.get('VISUAL') or 'vi'
+            
+            # Save current terminal state
+            from prompt_toolkit.application import get_app
+            app = get_app()
+            
+            # Hide the UI
+            app.renderer.erase()
+            app.output.flush()
+            
+            # Run editor
+            try:
+                returncode = subprocess.call([editor, temp_file])
+                
+                # Check if editor succeeded
+                if returncode == 0:
+                    # Read the edited content
+                    with open(temp_file, 'r', encoding='utf-8') as f:
+                        new_text = f.read()
+                    
+                    # Remove trailing newline if present
+                    if new_text.endswith('\n'):
+                        new_text = new_text[:-1]
+                    
+                    # Update buffer
+                    buff.text = new_text
+                    buff.cursor_position = len(new_text)
+                    
+                    # Invalidate to refresh the display
+                    app.invalidate()
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
+                
+                # Restore the UI
+                app.renderer.reset()
+                app.invalidate()
+
         @kb.add('c-j')
         def handle_ctrl_enter(event):
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
