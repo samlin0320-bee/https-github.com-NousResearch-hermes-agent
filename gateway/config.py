@@ -701,6 +701,13 @@ def load_gateway_config() -> GatewayConfig:
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
 
+            wh_home = yaml_cfg.get("WHATSAPP_HOME_CHANNEL")
+            if wh_home and not os.getenv("WHATSAPP_HOME_CHANNEL"):
+                os.environ["WHATSAPP_HOME_CHANNEL"] = str(wh_home)
+            wh_home_name = yaml_cfg.get("WHATSAPP_HOME_CHANNEL_NAME")
+            if wh_home_name and not os.getenv("WHATSAPP_HOME_CHANNEL_NAME"):
+                os.environ["WHATSAPP_HOME_CHANNEL_NAME"] = str(wh_home_name)
+
             # DingTalk settings → env vars (env vars take precedence)
             dingtalk_cfg = yaml_cfg.get("dingtalk", {})
             if isinstance(dingtalk_cfg, dict):
@@ -885,7 +892,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.WHATSAPP not in config.platforms:
             config.platforms[Platform.WHATSAPP] = PlatformConfig()
         config.platforms[Platform.WHATSAPP].enabled = True
-    
+    whatsapp_home = os.getenv("WHATSAPP_HOME_CHANNEL")
+    if whatsapp_home and Platform.WHATSAPP in config.platforms:
+        config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(
+            platform=Platform.WHATSAPP,
+            chat_id=whatsapp_home,
+            name=os.getenv("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
+        )
+
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:
