@@ -213,6 +213,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
+        self._sync_error_logged: str | None = None  # dedup repeated sync failure warnings
 
         # Recall controls
         self._auto_recall = True
@@ -440,7 +441,17 @@ class HindsightMemoryProvider(MemoryProvider):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
             if self._mode == "local_embedded":
-                from hindsight import HindsightEmbedded
+                try:
+                    from hindsight import HindsightEmbedded
+                except ModuleNotFoundError as e:
+                    import sys
+                    raise RuntimeError(
+                        "Hindsight 'local_embedded' mode requires the 'hindsight-all' package, "
+                        "which is not installed. The 'hindsight-client' package (declared in "
+                        "plugin.yaml) only provides the cloud/external client.\n\n"
+                        f"  uv pip install --python {sys.executable} hindsight-all\n\n"
+                        "Or re-run:  hermes memory setup"
+                    ) from e
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in ("openai_compatible", "openrouter"):
@@ -500,6 +511,45 @@ class HindsightMemoryProvider(MemoryProvider):
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"
+            logger.warning(
+                "Hindsight config uses deprecated mode 'local' (now 'local_embedded'). "
+                "Update ~/.hermes/hindsight/config.json to set \"mode\": \"local_embedded\", "
+                "or re-run: hermes memory setup"
+            )
+
+        # For local_embedded mode, verify hindsight-all is installed and attempt auto-install
+        if self._mode == "local_embedded":
+            try:
+                from importlib.metadata import version as pkg_version
+                pkg_version("hindsight-all")
+            except Exception:
+                logger.warning(
+                    "Hindsight 'local_embedded' mode requires the 'hindsight-all' package, "
+                    "which is not installed. Attempting auto-install..."
+                )
+                import shutil, subprocess, sys
+                uv_path = shutil.which("uv")
+                if uv_path:
+                    try:
+                        subprocess.run(
+                            [uv_path, "pip", "install", "--python", sys.executable,
+                             "--quiet", "hindsight-all"],
+                            check=True, timeout=120, capture_output=True,
+                        )
+                        logger.info("hindsight-all installed successfully")
+                    except Exception as e:
+                        logger.error(
+                            "Failed to auto-install hindsight-all: %s. "
+                            "Install manually: uv pip install --python %s hindsight-all  "
+                            "Or re-run: hermes memory setup",
+                            e, sys.executable,
+                        )
+                else:
+                    logger.error(
+                        "uv not found. Install hindsight-all manually: "
+                        "pip install hindsight-all  Or re-run: hermes memory setup"
+                    )
+
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in ("local_embedded", "local_external") else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
@@ -764,7 +814,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 ))
                 logger.debug("Hindsight retain succeeded")
             except Exception as e:
-                logger.warning("Hindsight sync failed: %s", e, exc_info=True)
+                err_key = str(type(e).__name__)
+                if self._sync_error_logged != err_key:
+                    self._sync_error_logged = err_key
+                    logger.warning("Hindsight sync failed: %s", e, exc_info=True)
+                else:
+                    logger.debug("Hindsight sync failed (repeated): %s", e)
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
