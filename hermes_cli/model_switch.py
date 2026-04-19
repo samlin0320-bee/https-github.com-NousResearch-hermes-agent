@@ -1039,20 +1039,30 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
+            if ep_name.lower() in seen_slugs:
+                continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
-            default_model = ep_cfg.get("default_model", "")
+            api_url = (
+                ep_cfg.get("base_url", "")
+                or ep_cfg.get("api", "")
+                or ep_cfg.get("url", "")
+                or ""
+            )
+            default_model = ep_cfg.get("model", "") or ep_cfg.get("default_model", "")
 
-            # Build models list from both default_model and full models array
+            # Build models list from both default_model/model and full models config.
             models_list = []
             if default_model:
                 models_list.append(default_model)
-            # Also include the full models list from config
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, list):
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
+            elif isinstance(cfg_models, dict):
+                for model_name in cfg_models.keys():
+                    if model_name and model_name not in models_list:
+                        models_list.append(model_name)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
@@ -1066,6 +1076,7 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name.lower())
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
