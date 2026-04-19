@@ -2714,6 +2714,25 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        # --- Plugin-registered platform adapters ---
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            mgr = get_plugin_manager()
+            if mgr is not None:
+                entry = mgr._platform_adapters.get(platform.value)
+                if entry is not None:
+                    check_fn = entry.get("check_fn")
+                    if check_fn and not check_fn():
+                        logger.warning(
+                            "Plugin platform '%s': requirements not met",
+                            platform.value,
+                        )
+                        return None
+                    adapter_cls = entry["adapter_class"]
+                    return adapter_cls(config)
+        except Exception as exc:
+            logger.debug("Plugin adapter lookup failed for %s: %s", platform.value, exc)
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2778,6 +2797,21 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
         }
+
+        # Merge plugin-registered platform env vars into auth maps
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            mgr = get_plugin_manager()
+            if mgr is not None:
+                for plat_name, entry in mgr._platform_adapters.items():
+                    from gateway.config import register_plugin_platform
+                    plat = register_plugin_platform(plat_name)
+                    if entry.get("allowed_users_env"):
+                        platform_env_map[plat] = entry["allowed_users_env"]
+                    if entry.get("allow_all_users_env"):
+                        platform_allow_all_map[plat] = entry["allow_all_users_env"]
+        except Exception:
+            pass
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
