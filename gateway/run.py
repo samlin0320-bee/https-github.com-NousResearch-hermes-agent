@@ -1099,7 +1099,7 @@ class GatewayRunner:
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
+            route["request_overrides"] = {}
             return route
 
         try:
