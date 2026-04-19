@@ -25,6 +25,11 @@ from typing import Dict, Any, List, Optional, Union
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
+# Hard ceiling on parallel summarization so a slow/stuck auxiliary model
+# can't make the whole tool hang. _run_async has its own timeout only on
+# the gateway path (300s); the CLI path waits forever, so we must bound
+# the coroutine itself here.
+SUMMARIZATION_TIMEOUT_SECONDS = 60
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -421,14 +426,18 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
+        # Summarize all sessions in parallel, bounded by a hard timeout so
+        # a slow auxiliary model can't make the tool hang indefinitely (#7725).
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
+            """Summarize all sessions in parallel with a hard timeout."""
             coros = [
                 _summarize_session(text, query, meta)
                 for _, _, text, meta in tasks
             ]
-            return await asyncio.gather(*coros, return_exceptions=True)
+            return await asyncio.wait_for(
+                asyncio.gather(*coros, return_exceptions=True),
+                timeout=SUMMARIZATION_TIMEOUT_SECONDS,
+            )
 
         try:
             # Use _run_async() which properly manages event loops across
@@ -439,14 +448,19 @@ def session_search(
             # causing deadlocks in gateway mode (#2681).
             from model_tools import _run_async
             results = _run_async(_summarize_all())
-        except concurrent.futures.TimeoutError:
+        except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
             logging.warning(
-                "Session summarization timed out after 60 seconds",
+                "Session summarization timed out after %d seconds",
+                SUMMARIZATION_TIMEOUT_SECONDS,
                 exc_info=True,
             )
             return json.dumps({
                 "success": False,
-                "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
+                "error": (
+                    f"Session summarization timed out after "
+                    f"{SUMMARIZATION_TIMEOUT_SECONDS}s. Try a more specific "
+                    f"query or reduce the limit."
+                ),
             }, ensure_ascii=False)
 
         summaries = []
