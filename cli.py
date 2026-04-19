@@ -1147,6 +1147,28 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+def _rich_markdown_from_text(text: str):
+    """Render markdown content using Rich's Markdown parser.
+
+    Properly renders headers, code blocks, tables, lists, and other
+    markdown syntax with correct formatting and syntax highlighting.
+    """
+    from rich.markdown import Markdown
+    return Markdown(text or "")
+
+
+def _smart_render(text: str):
+    """Auto-detect markdown in text and render accordingly.
+
+    Returns rich.markdown.Markdown if markdown syntax is detected,
+    otherwise falls back to RichText.from_ansi for ANSI-colored output.
+    """
+    _MD_MARKERS = ('```', '## ', '### ', '- ', '1. ', '|--', '| ', '**')
+    if any(marker in (text or '') for marker in _MD_MARKERS):
+        return _rich_markdown_from_text(text)
+    return _rich_text_from_ansi(text)
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -6040,7 +6062,7 @@ class HermesCLI:
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _smart_render(response),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -6165,7 +6187,7 @@ class HermesCLI:
                         _resp_color = "#4F6D4A"
 
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _smart_render(response),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -8265,7 +8287,7 @@ class HermesCLI:
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _smart_render(response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
