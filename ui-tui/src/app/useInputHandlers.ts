@@ -8,7 +8,9 @@ import type {
   VoiceRecordResponse
 } from '../gatewayTypes.js'
 
+import { writeClipboardText } from '../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../lib/osc52.js'
+import { isAction, isMac } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
@@ -30,9 +32,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const copySelection = () => {
     const text = terminal.selection.copySelection()
 
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
+    if (!text) {
+      return
     }
+
+    void writeClipboardText(text).then(copied => {
+      if (!copied) {
+        writeOsc52Clipboard(text)
+      }
+    })
+
+    actions.sys(`copied ${text.length} chars`)
   }
 
   const clearSelection = () => {
@@ -225,10 +235,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return terminal.scrollWithSelection(key.pageUp ? -step : step)
     }
 
-    if (key.ctrl && key.shift && ch.toLowerCase() === 'c') {
-      return copySelection()
-    }
-
     if (key.escape && terminal.hasSelection) {
       return clearSelection()
     }
@@ -245,7 +251,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isCtrl(key, ch, 'c')) {
+    if (isAction(key, ch, 'c')) {
       if (terminal.hasSelection) {
         return copySelection()
       }
@@ -253,6 +259,28 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const inputSel = getInputSelection()
 
       if (inputSel && inputSel.end > inputSel.start) {
+        const text = inputSel.value.slice(inputSel.start, inputSel.end)
+
+        void writeClipboardText(text).then(copied => {
+          if (!copied) {
+            writeOsc52Clipboard(text)
+          }
+        })
+
+        inputSel.clear()
+      }
+
+      return
+    }
+
+    if (isCtrl(key, ch, 'c')) {
+      if (!isMac && terminal.hasSelection) {
+        return copySelection()
+      }
+
+      const inputSel = getInputSelection()
+
+      if (!isMac && inputSel && inputSel.end > inputSel.start) {
         writeOsc52Clipboard(inputSel.value.slice(inputSel.start, inputSel.end))
         inputSel.clear()
 
@@ -275,11 +303,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.die()
     }
 
-    if (isCtrl(key, ch, 'd')) {
+    if (isAction(key, ch, 'd')) {
       return actions.die()
     }
 
-    if (isCtrl(key, ch, 'l')) {
+    if (isAction(key, ch, 'l')) {
       if (actions.guardBusySessionSwitch()) {
         return
       }
@@ -289,11 +317,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.newSession()
     }
 
-    if (isCtrl(key, ch, 'b')) {
+    if (isAction(key, ch, 'b')) {
       return voice.recording ? voiceStop() : voiceStart()
     }
 
-    if (isCtrl(key, ch, 'g')) {
+    if (isAction(key, ch, 'g')) {
       return cActions.openEditor()
     }
 
@@ -312,7 +340,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isCtrl(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
+    if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
       const next = cActions.dequeue()
 
       if (next) {
