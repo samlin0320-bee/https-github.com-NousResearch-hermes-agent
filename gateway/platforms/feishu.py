@@ -1454,6 +1454,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
 
@@ -1504,7 +1505,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 chat_id=chat_id,
                 msg_type="interactive",
                 payload=payload,
-                reply_to=None,
+                reply_to=reply_to,
                 metadata=metadata,
             )
 

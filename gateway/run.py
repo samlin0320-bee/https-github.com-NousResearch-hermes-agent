@@ -8633,6 +8633,7 @@ class GatewayRunner:
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        reply_to=event_message_id,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -8915,6 +8916,7 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_reply_to = event_message_id  # reply to the user's original message
 
         async def send_progress_messages():
             if not progress_queue:
@@ -8988,15 +8990,15 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            await adapter.send(chat_id=source.chat_id, content=msg, reply_to=_progress_reply_to, metadata=_progress_metadata)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            result = await adapter.send(chat_id=source.chat_id, content=full_text, reply_to=_progress_reply_to, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(chat_id=source.chat_id, content=msg, reply_to=_progress_reply_to, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -9076,6 +9078,7 @@ class GatewayRunner:
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_reply_to = event_message_id
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -9085,6 +9088,7 @@ class GatewayRunner:
                     _status_adapter.send(
                         _status_chat_id,
                         message,
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -9207,6 +9211,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            reply_to=event_message_id,
                         )
                         if _want_stream_deltas:
                             _stream_delta_cb = _stream_consumer.on_delta
@@ -9228,6 +9233,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             text,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -9325,6 +9331,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             message,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -9473,6 +9480,7 @@ class GatewayRunner:
                                 session_key=_approval_session_key,
                                 description=desc,
                                 metadata=_status_thread_metadata,
+                                reply_to=_status_reply_to,
                             ),
                             _loop_for_step,
                         ).result(timeout=15)
@@ -9501,6 +9509,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -9813,6 +9822,7 @@ class GatewayRunner:
                     await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:
@@ -9907,6 +9917,7 @@ class GatewayRunner:
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
+                                    reply_to=_status_reply_to,
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -10116,6 +10127,7 @@ class GatewayRunner:
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
+                                reply_to=event_message_id,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:
