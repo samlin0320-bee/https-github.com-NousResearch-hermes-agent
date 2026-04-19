@@ -53,9 +53,10 @@ class DeliveryTarget:
         - "telegram" → Telegram home channel
         - "telegram:123456" → specific Telegram chat
         """
-        target = target.strip().lower()
-        
-        if target == "origin":
+        raw_target = target.strip()
+        normalized_target = raw_target.lower()
+
+        if normalized_target == "origin":
             if origin:
                 return cls(
                     platform=origin.platform,
@@ -66,26 +67,41 @@ class DeliveryTarget:
             else:
                 # Fallback to local if no origin
                 return cls(platform=Platform.LOCAL, is_origin=True)
-        
-        if target == "local":
+
+        if normalized_target == "local":
             return cls(platform=Platform.LOCAL)
-        
+
         # Check for platform:chat_id or platform:chat_id:thread_id format
-        if ":" in target:
-            parts = target.split(":", 2)
-            platform_str = parts[0]
-            chat_id = parts[1] if len(parts) > 1 else None
-            thread_id = parts[2] if len(parts) > 2 else None
+        if ":" in raw_target:
+            platform_token, target_ref = raw_target.split(":", 1)
+            platform_str = platform_token.strip().lower()
             try:
                 platform = Platform(platform_str)
+                target_ref = target_ref.strip()
+
+                # Matrix IDs inherently contain ":" (homeserver separator), so
+                # preserve the full remainder as chat_id instead of treating it
+                # as a thread suffix.
+                if platform == Platform.MATRIX and (
+                    target_ref.startswith("!") or target_ref.startswith("@")
+                ):
+                    return cls(
+                        platform=platform,
+                        chat_id=target_ref or None,
+                        is_explicit=True,
+                    )
+
+                parts = target_ref.split(":", 1)
+                chat_id = parts[0] if len(parts) > 0 else None
+                thread_id = parts[1] if len(parts) > 1 else None
                 return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
-        
+
         # Just a platform name (use home channel)
         try:
-            platform = Platform(target)
+            platform = Platform(normalized_target)
             return cls(platform=platform)
         except ValueError:
             # Unknown platform, treat as local
