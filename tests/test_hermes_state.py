@@ -334,6 +334,23 @@ class TestFTS5Search:
         assert isinstance(results[0]["context"], list)
         assert len(results[0]["context"]) > 0
 
+    def test_search_context_uses_adjacent_messages_within_session(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+
+        db.append_message("s1", role="user", content="first message in s1")
+        db.append_message("s2", role="user", content="interleaving message in s2")
+        db.append_message("s1", role="assistant", content="match target keyword")
+        db.append_message("s1", role="user", content="last message in s1")
+
+        results = db.search_messages("target")
+        assert len(results) == 1
+        assert [msg["content"] for msg in results[0]["context"]] == [
+            "first message in s1",
+            "match target keyword",
+            "last message in s1",
+        ]
+
     def test_search_special_chars_do_not_crash(self, db):
         """FTS5 special characters in queries must not raise OperationalError."""
         db.create_session(session_id="s1", source="cli")

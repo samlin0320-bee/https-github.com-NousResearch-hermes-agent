@@ -1126,10 +1126,55 @@ class SessionDB:
             try:
                 with self._lock:
                     ctx_cursor = self._conn.execute(
-                        """SELECT role, content FROM messages
-                           WHERE session_id = ? AND id >= ? - 1 AND id <= ? + 1
-                           ORDER BY id""",
-                        (match["session_id"], match["id"], match["id"]),
+                        """
+                        WITH context_rows AS (
+                            SELECT role, content, -1 AS ord
+                            FROM messages
+                            WHERE id = (
+                                SELECT id
+                                FROM messages
+                                WHERE session_id = ?
+                                  AND (
+                                      timestamp < ?
+                                      OR (timestamp = ? AND id < ?)
+                                  )
+                                ORDER BY timestamp DESC, id DESC
+                                LIMIT 1
+                            )
+                            UNION ALL
+                            SELECT role, content, 0 AS ord
+                            FROM messages
+                            WHERE id = ?
+                            UNION ALL
+                            SELECT role, content, 1 AS ord
+                            FROM messages
+                            WHERE id = (
+                                SELECT id
+                                FROM messages
+                                WHERE session_id = ?
+                                  AND (
+                                      timestamp > ?
+                                      OR (timestamp = ? AND id > ?)
+                                  )
+                                ORDER BY timestamp ASC, id ASC
+                                LIMIT 1
+                            )
+                        )
+                        SELECT role, content
+                        FROM context_rows
+                        ORDER BY ord
+                        """,
+                        (
+                            match["session_id"],
+                            match["timestamp"],
+                            match["timestamp"],
+                            match["id"],
+                            match["id"],
+                            match["session_id"],
+                            match["timestamp"],
+                            match["timestamp"],
+                            match["id"],
+                        ),
                     )
                     context_msgs = [
                         {"role": r["role"], "content": (r["content"] or "")[:200]}
