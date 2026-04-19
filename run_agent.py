@@ -5311,6 +5311,13 @@ class AIAgent:
                 )
                 self._swap_credential(next_entry)
                 return True, False
+            # All pool credentials exhausted (billing) — notify user
+            _plabel = getattr(self, "provider", "unknown")
+            self._emit_status(
+                f"⚠️ All API keys for {_plabel} are exhausted (billing). "
+                f"Attempting fallback provider. "
+                f"To restore: check your API key and run `hermes auth reset {_plabel}`."
+            )
             return False, has_retried_429
 
         if effective_reason == FailoverReason.rate_limit:
@@ -5326,6 +5333,13 @@ class AIAgent:
                 )
                 self._swap_credential(next_entry)
                 return True, False
+            # All pool credentials exhausted (rate limit) — notify user
+            _plabel = getattr(self, "provider", "unknown")
+            self._emit_status(
+                f"⚠️ All API keys for {_plabel} are rate-limited. "
+                f"Attempting fallback provider. "
+                f"To restore: wait for rate limits to reset or run `hermes auth reset {_plabel}`."
+            )
             return False, True
 
         if effective_reason == FailoverReason.auth:
@@ -5346,6 +5360,13 @@ class AIAgent:
                 )
                 self._swap_credential(next_entry)
                 return True, False
+            # All pool credentials exhausted (auth) — notify user
+            _plabel = getattr(self, "provider", "unknown")
+            self._emit_status(
+                f"⚠️ All API keys for {_plabel} are invalid or expired. "
+                f"Attempting fallback provider. Responses may behave differently. "
+                f"To restore: check your API key and run `hermes auth reset {_plabel}`."
+            )
 
         return False, has_retried_429
 
