@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import gateway.pairing as gateway_pairing
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
@@ -105,6 +106,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_pairing, "PAIRING_DIR", tmp_path / "pairing")
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())
@@ -357,6 +359,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_pairing, "PAIRING_DIR", tmp_path / "pairing")
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by
