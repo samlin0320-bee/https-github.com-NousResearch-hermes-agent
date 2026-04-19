@@ -2786,6 +2786,15 @@ class GatewayRunner:
                 logger.warning("BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured")
                 return None
             return BlueBubblesAdapter(config)
+        elif platform == Platform.NEXTCLOUD_TALK:
+            from gateway.platforms.nextcloud_talk import (
+                NextcloudTalkPlatform,
+                check_nextcloud_talk_requirements,
+            )
+            if not check_nextcloud_talk_requirements():
+                logger.warning("NextcloudTalk: dependencies not met")
+                return None
+            return NextcloudTalkPlatform(config)
 
         elif platform == Platform.QQBOT:
             from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
@@ -2836,6 +2845,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.NEXTCLOUD_TALK: "NEXTCLOUD_TALK_ALLOWED_USERS",
         }
         platform_group_env_map = {
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
@@ -2857,6 +2867,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.NEXTCLOUD_TALK: "NEXTCLOUD_TALK_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -10861,6 +10872,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False  # → sys.exit(1) in the caller
 
     return True
+
 
 
 def main():

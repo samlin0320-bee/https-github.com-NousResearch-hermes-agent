@@ -55,20 +55,7 @@ hermes-agent/
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
-│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot
-├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
-│   ├── src/entry.tsx        # TTY gate + render()
-│   ├── src/app.tsx          # Main state machine and UI
-│   ├── src/gatewayClient.ts # Child process + JSON-RPC bridge
-│   ├── src/app/             # Decomposed app logic (event handler, slash handler, stores, hooks)
-│   ├── src/components/      # Ink components (branding, markdown, prompts, pickers, etc.)
-│   ├── src/hooks/           # useCompletion, useInputHistory, useQueue, useVirtualHistory
-│   └── src/lib/             # Pure helpers (history, osc52, text, rpc, messages)
-├── tui_gateway/          # Python JSON-RPC backend for the TUI
-│   ├── entry.py             # stdio entrypoint
-│   ├── server.py            # RPC handlers and session logic
-│   ├── render.py            # Optional rich/ANSI bridge
-│   └── slash_worker.py      # Persistent HermesCLI subprocess for slash commands
+│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot, nextcloud_talk
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)

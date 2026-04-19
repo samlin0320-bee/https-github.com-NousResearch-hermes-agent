@@ -560,6 +560,7 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
+  nextcloud_talk: [hermes-nextcloud-talk]
 
 # =============================================================================
 # Gateway Platform Settings

@@ -47,6 +47,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot",
+    "nextcloud_talk",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -302,6 +303,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
+        "nextcloud_talk": Platform.NEXTCLOUD_TALK,
     }
 
     # Optionally wrap the content with a header/footer so the user knows this
