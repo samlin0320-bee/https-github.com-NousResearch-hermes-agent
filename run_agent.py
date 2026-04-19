@@ -80,7 +80,11 @@ from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, PLANNING_AND_SELF_REVIEW_GUIDANCE, SKILLS_GUIDANCE,
+    AUTONOMOUS_EXECUTION_GUIDANCE,
+    MULTIMODAL_VERIFICATION_GUIDANCE,
+    EDITING_VERIFICATION_GUIDANCE,
+    MEMORY_RETRIEVAL_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -3672,8 +3676,20 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        # Multimodal verification: gate on vision/visual tools being available
+        if any(t in self.valid_tool_names for t in ("browser_vision", "vision_analyze", "image_gen")):
+            tool_guidance.append(MULTIMODAL_VERIFICATION_GUIDANCE)
+        # Editing verification: gate on file-editing tools
+        if any(t in self.valid_tool_names for t in ("patch", "write_file")):
+            tool_guidance.append(EDITING_VERIFICATION_GUIDANCE)
+        # Memory retrieval: gate on both memory and session_search tools
+        if all(t in self.valid_tool_names for t in ("memory", "session_search")):
+            tool_guidance.append(MEMORY_RETRIEVAL_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
+
+        prompt_parts.append(PLANNING_AND_SELF_REVIEW_GUIDANCE)
+        prompt_parts.append(AUTONOMOUS_EXECUTION_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -11453,14 +11469,27 @@ class AIAgent:
                         # always populate reasoning fields via OpenRouter,
                         # so the old `not _has_structured` guard blocked
                         # retries for every reasoning model after prefill.
-                        _truly_empty = not self._strip_think_blocks(
+                        _stripped_visible = self._strip_think_blocks(
                             final_response
                         ).strip()
+                        _truly_empty = not _stripped_visible
+                        # Inline think-only content (e.g. "<think>...</think>")
+                        # should not trigger empty-response retries.  Those
+                        # retries are for transport/provider empties and
+                        # structured reasoning prefill exhaustion; retrying
+                        # think-only text burns API calls and regressed
+                        # test_inline_think_blocks_reasoning_only_accepted.
+                        _inline_think_only = bool(final_response.strip()) and _truly_empty
                         _prefill_exhausted = (
                             _has_structured
                             and self._thinking_prefill_retries >= 2
                         )
-                        if _truly_empty and (not _has_structured or _prefill_exhausted) and self._empty_content_retries < 3:
+                        if (
+                            _truly_empty
+                            and not _inline_think_only
+                            and (not _has_structured or _prefill_exhausted)
+                            and self._empty_content_retries < 3
+                        ):
                             self._empty_content_retries += 1
                             logger.warning(
                                 "Empty response (no content or reasoning) — "
