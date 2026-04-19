@@ -11,6 +11,7 @@ Config via environment variables:
   HINDSIGHT_BUDGET    — recall budget: low/mid/high (default: mid)
   HINDSIGHT_API_URL   — API endpoint
   HINDSIGHT_MODE      — cloud or local (default: cloud)
+  HINDSIGHT_TIMEOUT   — HTTP client timeout in seconds (default: 300)
 
 Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 ~/.hindsight/config.json (legacy, shared) for backward compatibility.
@@ -458,7 +459,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 from hindsight_client import Hindsight
-                kwargs = {"base_url": self._api_url, "timeout": 30.0}
+                kwargs = {
+                    "base_url": self._api_url,
+                    "timeout": float(os.environ.get("HINDSIGHT_TIMEOUT", "300.0")),
+                }
                 if self._api_key:
                     kwargs["api_key"] = self._api_key
                 logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s)",
