@@ -22,6 +22,12 @@ Cron jobs can:
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
 
+:::warning
+If your cron prompt triggers `delegate_task` (task delegation to a sub-agent), the parent cron session may be killed while the sub-agent is still working. The sub-agent's tool calls and API activity do not update the parent session's activity tracker, so the parent appears idle and is terminated after the inactivity timeout (default 600 seconds), killing both sessions.
+
+**Workaround:** Avoid `delegate_task` in cron job prompts. Put the full task directly in the cron prompt, or attach skills to provide needed context. If delegation is unavoidable, increase the timeout via the `HERMES_CRON_TIMEOUT` environment variable (e.g. `3600` for one hour, or `0` for unlimited).
+:::
+
 ## Creating scheduled tasks
 
 ### In chat with `/cron`
