@@ -495,6 +495,19 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _resolve_gateway_model_config(config: dict | None = None) -> dict:
+    """Read the full model config dict from config.yaml.
+
+    Returns the model section as a dict (or empty dict) so callers can
+    extract any field they need (default, provider, base_url, max_tokens, etc.).
+    """
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        return model_cfg
+    return {}
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -630,6 +643,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
+        self._max_tokens = self._load_max_tokens()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -886,6 +900,7 @@ class GatewayRunner:
                 **runtime_kwargs,
                 model=model,
                 max_iterations=8,
+                max_tokens=self._max_tokens,
                 quiet_mode=True,
                 skip_memory=True,  # Flush agent — no memory provider
                 enabled_toolsets=["memory", "skills"],
@@ -1474,6 +1489,27 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_max_tokens() -> int | None:
+        """Load model.max_tokens from config.yaml.
+
+        Returns None if not configured, letting the adapter use model defaults.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    mt = model_cfg.get("max_tokens")
+                    if mt is not None:
+                        return int(mt)
+        except Exception:
+            pass
+        return None
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
@@ -4140,6 +4176,7 @@ class GatewayRunner:
                                     **_hyg_runtime,
                                     model=_hyg_model,
                                     max_iterations=4,
+                                    max_tokens=self._max_tokens,
                                     quiet_mode=True,
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
@@ -6314,6 +6351,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    max_tokens=self._max_tokens,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
@@ -6496,6 +6534,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=8,
+                    max_tokens=self._max_tokens,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=[],
@@ -6847,6 +6886,7 @@ class GatewayRunner:
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,
+                max_tokens=self._max_tokens,
                 quiet_mode=True,
                 skip_memory=True,
                 enabled_toolsets=["memory"],
@@ -9530,6 +9570,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    max_tokens=self._max_tokens,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
