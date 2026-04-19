@@ -100,6 +100,7 @@ def _normalize_server_url(raw: str) -> str:
 class BlueBubblesAdapter(BasePlatformAdapter):
     platform = Platform.BLUEBUBBLES
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
@@ -219,10 +220,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     @property
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
+        from urllib.parse import quote
         host = self.webhook_host
         if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
             host = "localhost"
-        return f"http://{host}:{self.webhook_port}{self.webhook_path}"
+        base = f"http://{host}:{self.webhook_port}{self.webhook_path}"
+        if self.password:
+            base += f"?password={quote(self.password, safe='')}"
+        return base
 
     @property
     def _webhook_register_url(self) -> str:
