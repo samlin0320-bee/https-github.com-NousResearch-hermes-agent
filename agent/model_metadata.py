@@ -245,6 +245,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "integrate.api.nvidia.com": "nvidia",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "bedrock-runtime": "bedrock",
+    "bedrock-mantle": "bedrock",
     "ollama.com": "ollama-cloud",
 }
 
