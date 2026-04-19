@@ -1,4 +1,4 @@
-"""Tests for macOS Homebrew PATH discovery in browser_tool.py."""
+"""Tests for browser_tool PATH discovery across Homebrew and Termux."""
 
 import json
 import os

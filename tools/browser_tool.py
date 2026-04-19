@@ -155,6 +155,28 @@ def _merge_browser_path(existing_path: str = "") -> str:
 
     return os.pathsep.join(prefix_parts + path_parts)
 
+
+def _browser_candidate_path_dirs() -> list[str]:
+    """Return ordered browser CLI PATH candidates shared by discovery and execution."""
+    hermes_home = get_hermes_home()
+    hermes_node_bin = str(hermes_home / "node" / "bin")
+    return [hermes_node_bin, *_discover_homebrew_node_dirs(), *_SANE_PATH_DIRS]
+
+
+def _merge_browser_path(existing_path: str = "") -> str:
+    """Prepend browser-specific PATH fallbacks without reordering existing entries."""
+    path_parts = [p for p in (existing_path or "").split(os.pathsep) if p]
+    existing_parts = set(path_parts)
+    prefix_parts: list[str] = []
+
+    for part in _browser_candidate_path_dirs():
+        if not part or part in existing_parts or part in prefix_parts:
+            continue
+        if os.path.isdir(part):
+            prefix_parts.append(part)
+
+    return os.pathsep.join(prefix_parts + path_parts)
+
 # Throttle screenshot cleanup to avoid repeated full directory scans.
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 
