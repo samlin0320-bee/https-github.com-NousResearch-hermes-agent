@@ -9023,7 +9023,9 @@ class AIAgent:
         if self._memory_manager:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                _ext_prefetch_cache = self._memory_manager.prefetch_all(
+                    _query, session_id=self.session_id,
+                ) or ""
             except Exception:
                 pass
 
@@ -11810,7 +11812,9 @@ class AIAgent:
         if self._memory_manager and final_response and original_user_message:
             try:
                 self._memory_manager.sync_all(original_user_message, final_response)
-                self._memory_manager.queue_prefetch_all(original_user_message)
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message, session_id=self.session_id,
+                )
             except Exception:
                 pass
 
