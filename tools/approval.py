@@ -323,11 +323,16 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    entries = []
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        _gateway_queues.pop(session_key, None)
+        entries = list(_gateway_queues.pop(session_key, []))
+
+    for entry in entries:
+        entry.result = "deny"
+        entry.event.set()
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:

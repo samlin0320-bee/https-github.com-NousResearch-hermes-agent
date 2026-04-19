@@ -4764,6 +4764,13 @@ class GatewayRunner:
         except Exception:
             pass
 
+        try:
+            from tools.approval import clear_session as clear_approval_session
+            clear_approval_session(session_key)
+        except Exception:
+            pass
+        self._pending_approvals.pop(session_key, None)
+
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 

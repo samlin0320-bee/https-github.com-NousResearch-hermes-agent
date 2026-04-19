@@ -2,12 +2,23 @@
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import threading
+import time
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from tools.approval import (
+    _ApprovalEntry,
+    _gateway_queues,
+    approve_session,
+    clear_session,
+    enable_session_yolo,
+    is_approved,
+    is_session_yolo_enabled,
+)
 
 
 def _make_source() -> SessionSource:
@@ -63,6 +74,14 @@ def _make_runner():
     runner._format_session_info = lambda: ""
 
     return runner
+
+
+@pytest.fixture(autouse=True)
+def _clear_gateway_approval_state():
+    session_key = build_session_key(_make_source())
+    clear_session(session_key)
+    yield
+    clear_session(session_key)
 
 
 @pytest.mark.asyncio
@@ -124,3 +143,53 @@ async def test_new_command_only_clears_own_session():
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
+
+
+@pytest.mark.asyncio
+async def test_new_command_clears_session_scoped_approval_and_yolo_state():
+    """/new must drop session-scoped approval state so the next session starts clean."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    pattern_key = "recursive delete"
+
+    approve_session(session_key, pattern_key)
+    enable_session_yolo(session_key)
+    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
+
+    assert is_approved(session_key, pattern_key) is True
+    assert is_session_yolo_enabled(session_key) is True
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert is_approved(session_key, pattern_key) is False
+    assert is_session_yolo_enabled(session_key) is False
+    assert session_key not in runner._pending_approvals
+
+
+@pytest.mark.asyncio
+async def test_new_command_unblocks_pending_gateway_approval_waiters():
+    """/new must release any blocked approval waiters for the session."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    entry = _ApprovalEntry({"command": "rm -rf /tmp/demo"})
+    _gateway_queues[session_key] = [entry]
+
+    waiter_done = threading.Event()
+    waiter_result = {"resolved": False, "choice": None}
+
+    def _waiter():
+        waiter_result["resolved"] = entry.event.wait(timeout=2)
+        waiter_result["choice"] = entry.result
+        waiter_done.set()
+
+    thread = threading.Thread(target=_waiter, daemon=True)
+    thread.start()
+
+    time.sleep(0.05)
+    await runner._handle_reset_command(_make_event("/new"))
+    waiter_done.wait(timeout=2)
+    thread.join(timeout=2)
+
+    assert waiter_result["resolved"] is True
+    assert waiter_result["choice"] == "deny"
+    assert session_key not in _gateway_queues
