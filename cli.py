@@ -4785,10 +4785,10 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
-            # Use the curated model list from list_authenticated_providers()
-            # (same lists as `hermes model` and gateway pickers).
-            # Only fall back to the live provider catalog when the curated
-            # list is empty (e.g. user-defined endpoints with no curated list).
+            # Use the model list from list_authenticated_providers() which
+            # already probes custom/local endpoints live via fetch_api_models.
+            # Fall back to the live provider catalog for built-in providers
+            # that have no curated list.
             model_list = provider_data.get("models", [])
             if not model_list:
                 try:
