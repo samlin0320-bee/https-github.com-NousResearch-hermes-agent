@@ -149,6 +149,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'guides/tips',
+        'guides/hermes-first-30-minutes',
         'guides/local-llm-on-mac',
         'guides/daily-briefing-bot',
         'guides/team-telegram-assistant',
