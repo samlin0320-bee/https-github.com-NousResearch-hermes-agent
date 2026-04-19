@@ -47,6 +47,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot",
+    "zulip",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -66,6 +67,7 @@ _HOME_TARGET_ENV_VARS = {
     "weixin": "WEIXIN_HOME_CHANNEL",
     "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
     "qqbot": "QQBOT_HOME_CHANNEL",
+    "zulip": "ZULIP_HOME_CHANNEL",
 }
 
 # Legacy env var names kept for back-compat.  Each entry is the current
@@ -200,12 +202,35 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     }
 
 
+def _split_delivery_targets(deliver: str) -> list[str]:
+    if "group_dm:" not in deliver:
+        return [p.strip() for p in deliver.split(",") if p.strip()]
+    parts = []
+    current = []
+    for segment in deliver.split(","):
+        if segment.strip().startswith("zulip:group_dm:"):
+            if current:
+                parts.append(",".join(current))
+            current = [segment.strip()]
+        elif current and current[0].startswith("zulip:group_dm:"):
+            current.append(segment.strip())
+        else:
+            if current:
+                parts.append(",".join(current))
+                current = []
+            if segment.strip():
+                parts.append(segment.strip())
+    if current:
+        parts.append(",".join(current))
+    return [p for p in parts if p]
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
     deliver = job.get("deliver", "local")
     if deliver == "local":
         return []
-    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    parts = _split_delivery_targets(str(deliver))
     seen = set()
     targets = []
     for part in parts:

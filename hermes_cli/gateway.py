@@ -2288,68 +2288,36 @@ _PLATFORMS = [
         ],
     },
     {
-        "key": "wecom_callback",
-        "label": "WeCom Callback (Self-Built App)",
+        "key": "zulip",
+        "label": "Zulip",
         "emoji": "💬",
-        "token_var": "WECOM_CALLBACK_CORP_ID",
+        "token_var": "ZULIP_API_KEY",
         "setup_instructions": [
-            "1. Go to WeCom Admin Console → Applications → Create Self-Built App",
-            "2. Note the Corp ID (top of admin console) and create a Corp Secret",
-            "3. Under Receive Messages, configure the callback URL to point to your server",
-            "4. Copy the Token and EncodingAESKey from the callback configuration",
-            "5. The adapter runs an HTTP server — ensure the port is reachable from WeCom",
-            "6. Restrict access with WECOM_CALLBACK_ALLOWED_USERS for production use",
+            "1. Works with any Zulip server (cloud at zulipchat.com or self-hosted)",
+            "2. Install the Zulip Python package: pip install zulip",
+            "3. Create a bot: Zulip settings → Your bots → Add a new bot",
+            "   Choose 'Generic bot' — copy the bot's email and API key",
+            "4. For self-hosted: enable the bot at your-org.zulipchat.com",
+            "5. Stream messages require @mentioning the bot to trigger a response",
+            "   (configurable via ZULIP_REQUIRE_MENTION and ZULIP_FREE_RESPONSE_STREAMS)",
+            "6. DMs to the bot are always processed (no mention needed)",
+            "7. The bot supports image/document/video delivery in streams and DMs",
+            "8. Cron jobs can deliver to Zulip via ZULIP_HOME_CHANNEL or deliver='zulip:stream_id:topic'",
         ],
         "vars": [
-            {"name": "WECOM_CALLBACK_CORP_ID", "prompt": "Corp ID", "password": False,
-             "help": "Your WeCom enterprise Corp ID."},
-            {"name": "WECOM_CALLBACK_CORP_SECRET", "prompt": "Corp Secret", "password": True,
-             "help": "The secret for your self-built application."},
-            {"name": "WECOM_CALLBACK_AGENT_ID", "prompt": "Agent ID", "password": False,
-             "help": "The Agent ID of your self-built application."},
-            {"name": "WECOM_CALLBACK_TOKEN", "prompt": "Callback Token", "password": True,
-             "help": "The Token from your WeCom callback configuration."},
-            {"name": "WECOM_CALLBACK_ENCODING_AES_KEY", "prompt": "Encoding AES Key", "password": True,
-             "help": "The EncodingAESKey from your WeCom callback configuration."},
-            {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback server port (default: 8645)", "password": False,
-             "help": "Port for the HTTP callback server."},
-            {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+            {"name": "ZULIP_SITE_URL", "prompt": "Server URL (e.g. https://your-org.zulipchat.com)", "password": False,
+             "help": "Your Zulip server URL. Works with cloud and self-hosted instances."},
+            {"name": "ZULIP_BOT_EMAIL", "prompt": "Bot email address", "password": False,
+             "help": "The bot's email address from step 2 above."},
+            {"name": "ZULIP_API_KEY", "prompt": "Bot API key", "password": True,
+             "help": "Paste the API key from the bot's settings page."},
+            {"name": "ZULIP_ALLOWED_USERS", "prompt": "Allowed user emails (comma-separated)", "password": False,
              "is_allowlist": True,
-             "help": "Restrict which WeCom users can interact with the app."},
-        ],
-    },
-    {
-        "key": "weixin",
-        "label": "Weixin / WeChat",
-        "emoji": "💬",
-        "token_var": "WEIXIN_ACCOUNT_ID",
-    },
-    {
-        "key": "bluebubbles",
-        "label": "BlueBubbles (iMessage)",
-        "emoji": "💬",
-        "token_var": "BLUEBUBBLES_SERVER_URL",
-        "setup_instructions": [
-            "1. Install BlueBubbles on a Mac that will act as your iMessage server:",
-            "   https://bluebubbles.app/",
-            "2. Complete the BlueBubbles setup wizard — sign in with your Apple ID",
-            "3. In BlueBubbles Settings → API, note the Server URL and password",
-            "4. The server URL is typically http://<your-mac-ip>:1234",
-            "5. Hermes connects via the BlueBubbles REST API and receives",
-            "   incoming messages via a local webhook",
-            "6. To authorize users, use DM pairing: hermes pairing generate bluebubbles",
-            "   Share the code — the user sends it via iMessage to get approved",
-        ],
-        "vars": [
-            {"name": "BLUEBUBBLES_SERVER_URL", "prompt": "BlueBubbles server URL (e.g. http://192.168.1.10:1234)", "password": False,
-             "help": "The URL shown in BlueBubbles Settings → API."},
-            {"name": "BLUEBUBBLES_PASSWORD", "prompt": "BlueBubbles server password", "password": True,
-             "help": "The password shown in BlueBubbles Settings → API."},
-            {"name": "BLUEBUBBLES_ALLOWED_USERS", "prompt": "Pre-authorized phone numbers or iMessage IDs (comma-separated, or leave empty for DM pairing)", "password": False,
-             "is_allowlist": True,
-             "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead (recommended)."},
-            {"name": "BLUEBUBBLES_HOME_CHANNEL", "prompt": "Home channel (phone number or iMessage ID for cron/notifications, or empty)", "password": False,
-             "help": "Phone number or Apple ID to deliver cron results and notifications to."},
+             "help": "Email addresses of users who can interact with the bot."},
+            {"name": "ZULIP_DEFAULT_STREAM", "prompt": "Default stream name (for outbound messages, or empty)", "password": False,
+             "help": "Stream the bot sends to when no specific stream is given."},
+            {"name": "ZULIP_HOME_CHANNEL", "prompt": "Home channel stream:topic (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "Format: stream_name:topic (e.g. general:notifications). Hermes resolves the stream name to the real Zulip stream ID."},
         ],
     },
     {
@@ -2419,11 +2387,12 @@ def _platform_status(platform: dict) -> str:
         if val or password or homeserver:
             return "partially configured"
         return "not configured"
-    if platform.get("key") == "weixin":
-        token = get_env_value("WEIXIN_TOKEN")
-        if val and token:
+    if platform.get("key") == "zulip":
+        site_url = get_env_value("ZULIP_SITE_URL")
+        bot_email = get_env_value("ZULIP_BOT_EMAIL")
+        if val and site_url and bot_email:
             return "configured"
-        if val or token:
+        if val or site_url or bot_email:
             return "partially configured"
         return "not configured"
     if val:

@@ -2123,6 +2123,47 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
+def _setup_zulip():
+    """Configure Zulip (cloud or self-hosted) via gateway setup."""
+    print_header("Zulip")
+    existing = get_env_value("ZULIP_API_KEY")
+    if existing:
+        print_info("Zulip: already configured")
+        if not prompt_yes_no("Reconfigure Zulip?", False):
+            return
+    print()
+    print_info("Zulip is an open-source group chat with streams and topics.")
+    print_info("Create a bot at: Settings → Your Bots → Add a new bot")
+    print()
+
+    site_url = prompt("Zulip site URL (e.g., https://your-org.zulipchat.com)")
+    if site_url:
+        save_env_value("ZULIP_SITE_URL", site_url.rstrip("/"))
+
+    bot_email = prompt("Bot email (e.g., hermes-bot@your-org.zulipchat.com)")
+    if bot_email:
+        save_env_value("ZULIP_BOT_EMAIL", bot_email)
+
+    api_key = prompt("Bot API key", password=True)
+    if api_key:
+        save_env_value("ZULIP_API_KEY", api_key)
+
+    home_stream = prompt("Home stream (default: 'Hermes')")
+    if home_stream:
+        save_env_value("ZULIP_HOME_CHANNEL", home_stream)
+
+    home_topic = prompt("Home topic (optional, e.g., 'General')")
+    if home_topic:
+        save_env_value("ZULIP_HOME_TOPIC", home_topic)
+
+    allowed_users = prompt("Allowed Zulip user IDs/emails (comma-separated, blank = all)")
+    if allowed_users:
+        save_env_value("ZULIP_ALLOWED_USERS", allowed_users)
+
+    print()
+    print_success("Zulip configured!")
+
+
 # Platform registry for the gateway checklist
 _GATEWAY_PLATFORMS = [
     ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
@@ -2141,6 +2182,7 @@ _GATEWAY_PLATFORMS = [
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("QQ Bot", "QQ_APP_ID", _setup_qqbot),
+    ("Zulip", "ZULIP_BOT_EMAIL", _setup_zulip),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 

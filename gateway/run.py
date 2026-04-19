@@ -1798,6 +1798,7 @@ class GatewayRunner:
                        "WEIXIN_ALLOWED_USERS",
                        "BLUEBUBBLES_ALLOWED_USERS",
                        "QQ_ALLOWED_USERS",
+                       "ZULIP_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -1812,7 +1813,8 @@ class GatewayRunner:
                        "WECOM_CALLBACK_ALLOW_ALL_USERS",
                        "WEIXIN_ALLOW_ALL_USERS",
                        "BLUEBUBBLES_ALLOW_ALL_USERS",
-                       "QQ_ALLOW_ALL_USERS")
+                       "QQ_ALLOW_ALL_USERS",
+                       "ZULIP_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -2668,6 +2670,13 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.ZULIP:
+            from gateway.platforms.zulip import ZulipAdapter, check_zulip_requirements
+            if not check_zulip_requirements():
+                logger.warning("Zulip: zulip package not installed or ZULIP_BOT_EMAIL/URL/KEY not set")
+                return None
+            return ZulipAdapter(config)
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2710,6 +2719,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.ZULIP: "ZULIP_ALLOWED_USERS",
         }
         platform_group_env_map = {
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
@@ -2731,6 +2741,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.ZULIP: "ZULIP_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)

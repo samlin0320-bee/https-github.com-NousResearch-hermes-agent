@@ -31,6 +31,11 @@ _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
 )
+_ZULIP_DM_RE = re.compile(r"^dm:([^@]+@[^@]+)$", re.IGNORECASE)
+_ZULIP_GROUP_DM_RE = re.compile(
+    r"^group_dm:([^@]+@[^@]+(?:,[^@]+@[^@]+)*)$", re.IGNORECASE
+)
+_ZULIP_STREAM_RE = re.compile(r"^(\d+):(.+)$")
 _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
@@ -113,7 +118,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'zulip', 'zulip:123:General (stream_id:topic)', 'zulip:dm:user@example.com', 'zulip:group_dm:a@b.com,c@d.com'"
             },
             "message": {
                 "type": "string",
@@ -208,6 +213,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "zulip": Platform.ZULIP,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -300,7 +306,11 @@ def _handle_send(args):
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
-    """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    """Parse a tool target into chat_id/thread_id and whether it is explicit.
+
+    Supports Telegram, Feishu, Discord, Weixin, Matrix, and Zulip target
+    formats.  Returns (chat_id, thread_id, is_explicit).
+    """
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -317,11 +327,29 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "zulip":
+        return _parse_zulip_target_ref(target_ref)
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
     if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
         return target_ref, None, True
+    return None, None, False
+
+
+def _parse_zulip_target_ref(target_ref: str):
+    """Parse a Zulip target reference into (chat_id, thread_id, is_explicit)."""
+    m = _ZULIP_DM_RE.fullmatch(target_ref)
+    if m:
+        return f"dm:{m.group(1)}", None, True
+    m = _ZULIP_GROUP_DM_RE.fullmatch(target_ref)
+    if m:
+        return f"group_dm:{m.group(1)}", None, True
+    m = _ZULIP_STREAM_RE.fullmatch(target_ref)
+    if m:
+        return f"{m.group(1)}:{m.group(2)}", None, True
+    if re.match(r"^[^@\s]+@[^@\s]+$", target_ref):
+        return f"dm:{target_ref}", None, True
     return None, None, False
 
 
@@ -415,6 +443,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _feishu_available = False
 
+    # Zulip adapter import is optional (requires zulip package)
+    try:
+        from gateway.platforms.zulip import MAX_MESSAGE_LENGTH as ZULIP_MAX_MESSAGE_LENGTH
+        _zulip_available = True
+    except ImportError:
+        _zulip_available = False
+
     media_files = media_files or []
 
     if platform == Platform.SLACK and message:
@@ -432,6 +467,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    if _zulip_available:
+        _MAX_LENGTHS[Platform.ZULIP] = ZULIP_MAX_MESSAGE_LENGTH
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -537,6 +574,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+        elif platform == Platform.ZULIP:
+            result = await _send_zulip(pconfig, chat_id, chunk)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
@@ -1208,6 +1247,156 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
         except Exception:
             pass
+
+
+async def _send_zulip(pconfig, chat_id, message, media_files=None):
+    """Send via Zulip using a one-shot client (no persistent event queue needed).
+
+    Uses the same chat_id conventions as the Zulip adapter:
+    - ``"{stream_id}:{topic}"`` for stream messages
+    - ``"dm:{email}"`` for 1:1 DMs
+    - ``"group_dm:{email1},{email2}"`` for group DMs
+    - Bare email addresses are treated as DMs.
+
+    Media files are uploaded via the Zulip ``/user_uploads`` API and
+    embedded as Markdown image/link syntax in the message body.
+    """
+    try:
+        import zulip as _zulip_mod
+    except ImportError:
+        return {"error": "zulip package not installed. Run: pip install zulip"}
+
+    extra = getattr(pconfig, "extra", None) or {}
+    api_key = pconfig.token or os.getenv("ZULIP_API_KEY", "")
+    bot_email = extra.get("bot_email", "") or os.getenv("ZULIP_BOT_EMAIL", "")
+    site_url = extra.get("site_url", "") or os.getenv("ZULIP_SITE_URL", "")
+
+    if not api_key or not bot_email or not site_url:
+        return {"error": "Zulip not configured. Set ZULIP_API_KEY, ZULIP_BOT_EMAIL, and ZULIP_SITE_URL."}
+
+    try:
+        from gateway.platforms.zulip import (
+            _parse_stream_chat_id,
+            _parse_dm_chat_id,
+            _parse_group_dm_chat_id,
+            is_dm_chat_id,
+            is_group_dm_chat_id,
+        )
+    except ImportError:
+        return {"error": "Zulip adapter not available."}
+
+    client_kwargs = {
+        "site": site_url.rstrip("/"),
+        "email": bot_email,
+        "api_key": api_key,
+    }
+    cert_bundle = os.getenv("ZULIP_CERT_BUNDLE", "")
+    if cert_bundle:
+        client_kwargs["cert_bundle"] = cert_bundle
+    if os.getenv("ZULIP_ALLOW_INSECURE", "").lower() in ("true", "1", "yes"):
+        client_kwargs["insecure"] = True
+
+    try:
+        client = _zulip_mod.Client(**client_kwargs)
+    except Exception as exc:
+        return _error(f"Zulip client creation failed: {exc}")
+
+    media_files = media_files or []
+    warnings = []
+
+    uploaded_media_parts = []
+    for media_path, is_voice in media_files:
+        if not os.path.exists(media_path):
+            warning = f"Media file not found, skipping: {media_path}"
+            logger.warning(warning)
+            warnings.append(warning)
+            continue
+        try:
+            import io as _io
+            file_bytes = open(media_path, "rb").read()
+            buf = _io.BytesIO(file_bytes)
+            buf.name = os.path.basename(media_path)
+            result = client.upload_file(buf)
+            if result.get("result") == "success":
+                uri = result.get("uri", "")
+                if uri:
+                    ext = os.path.splitext(media_path)[1].lower()
+                    if ext in _IMAGE_EXTS:
+                        uploaded_media_parts.append(f"![{os.path.basename(media_path)}]({uri})")
+                    else:
+                        uploaded_media_parts.append(f"[{os.path.basename(media_path)}]({uri})")
+                else:
+                    warnings.append(f"Zulip upload returned empty URI for {media_path}")
+            else:
+                warnings.append(f"Zulip upload failed for {media_path}: {result.get('msg', 'unknown')}")
+        except Exception as exc:
+            warning = _sanitize_error_text(f"Failed to upload {media_path}: {exc}")
+            logger.error(warning)
+            warnings.append(warning)
+
+    combined_parts = []
+    if message.strip():
+        combined_parts.append(message)
+    combined_parts.extend(uploaded_media_parts)
+    combined_content = "\n".join(combined_parts)
+
+    if not combined_content.strip():
+        error = "No deliverable text or media remained after processing"
+        if warnings:
+            return {"error": error, "warnings": warnings}
+        return {"error": error}
+
+    request = None
+    parsed = _parse_stream_chat_id(chat_id)
+    if parsed:
+        stream_id, topic = parsed
+        request = {
+            "type": "stream",
+            "to": str(stream_id),
+            "topic": topic,
+            "content": combined_content,
+        }
+    elif is_dm_chat_id(chat_id):
+        email = _parse_dm_chat_id(chat_id)
+        request = {
+            "type": "private",
+            "to": [email],
+            "content": combined_content,
+        }
+    elif is_group_dm_chat_id(chat_id):
+        emails = _parse_group_dm_chat_id(chat_id)
+        if emails:
+            request = {
+                "type": "private",
+                "to": emails,
+                "content": combined_content,
+            }
+        else:
+            return {"error": f"Invalid group DM chat ID: {chat_id}"}
+    else:
+        request = {
+            "type": "private",
+            "to": [chat_id],
+            "content": combined_content,
+        }
+
+    try:
+        result = client.send_message(request)
+        if result.get("result") == "success":
+            msg_id = result.get("id")
+            response = {
+                "success": True,
+                "platform": "zulip",
+                "chat_id": chat_id,
+                "message_id": str(msg_id) if msg_id else None,
+            }
+            if warnings:
+                response["warnings"] = warnings
+            return response
+        else:
+            return _error(f"Zulip send failed: {result.get('msg', 'unknown error')}")
+    except Exception as exc:
+        return _error(f"Zulip send failed: {exc}")
 
 
 async def _send_homeassistant(token, extra, chat_id, message):
