@@ -350,6 +350,12 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
+        "tui": {
+            "input_max_lines": 8,
+            "collapse_large_pastes": True,
+            "history_nav_requires_empty_input": False,
+            "show_full_input": False,
+        },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
         },
@@ -8931,6 +8937,8 @@ class HermesCLI:
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
 
+        _history_nav_requires_empty = bool(CLI_CONFIG.get("tui", {}).get("history_nav_requires_empty_input", False))
+
         @kb.add('up', filter=_normal_input)
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
@@ -9146,6 +9154,9 @@ class HermesCLI:
                 event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
+        _input_max_lines = int(CLI_CONFIG.get("tui", {}).get("input_max_lines", 8))
+        _collapse_large_pastes = bool(CLI_CONFIG.get("tui", {}).get("collapse_large_pastes", True))
+
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
             """Handle terminal paste — detect clipboard images.
@@ -9171,7 +9182,7 @@ class HermesCLI:
                 pasted_text = _sanitize_surrogates(pasted_text)
                 line_count = pasted_text.count('\n')
                 buf = event.current_buffer
-                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                if _collapse_large_pastes and line_count >= 5 and not buf.text.strip().startswith('/'):
                     _paste_counter[0] += 1
                     paste_dir = _hermes_home / "pastes"
                     paste_dir.mkdir(parents=True, exist_ok=True)
@@ -9232,11 +9243,12 @@ class HermesCLI:
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
-            height=Dimension(min=1, max=8, preferred=1),
+            height=Dimension(min=1, max=_input_max_lines, preferred=1),
             prompt=get_prompt,
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
+            scrollbar=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
             completer=_completer,
@@ -9246,6 +9258,26 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+
+        # Guard history navigation so Up/Down only browse history when the input is empty.
+        if _history_nav_requires_empty:
+            _orig_auto_up = input_area.buffer.auto_up
+            _orig_auto_down = input_area.buffer.auto_down
+
+            def _auto_up_guard(count=1, go_to_start_of_line_if_history_changes=False):
+                if input_area.buffer.text:
+                    input_area.buffer.cursor_up(count)
+                else:
+                    _orig_auto_up(count, go_to_start_of_line_if_history_changes)
+
+            def _auto_down_guard(count=1, go_to_start_of_line_if_history_changes=False):
+                if input_area.buffer.text:
+                    input_area.buffer.cursor_down(count)
+                else:
+                    _orig_auto_down(count, go_to_start_of_line_if_history_changes)
+
+            input_area.buffer.auto_up = _auto_up_guard
+            input_area.buffer.auto_down = _auto_down_guard
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
@@ -9271,7 +9303,7 @@ class HermesCLI:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return min(max(visual_lines, 1), _input_max_lines)
             except Exception:
                 return 1
 
@@ -9309,7 +9341,7 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            if _collapse_large_pastes and line_count >= 5 and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"
@@ -10037,45 +10069,46 @@ class HermesCLI:
                     import re as _re
                     _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                    _show_full_input = bool(CLI_CONFIG.get("tui", {}).get("show_full_input", False))
+                    _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
+                    print()
+                    ChatConsole().print(_user_bar)
                     if paste_refs:
                         def _expand_ref(m):
                             p = Path(m.group(1))
                             return p.read_text(encoding="utf-8") if p.exists() else m.group(0)
                         expanded = _paste_ref_re.sub(_expand_ref, user_input)
-                        total_lines = expanded.count('\n') + 1
-                        n_pastes = len(paste_refs)
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        print()
-                        ChatConsole().print(_user_bar)
-                        # Show any surrounding user text alongside the paste summary
-                        split_parts = _paste_ref_re.split(user_input)
-                        visible_user_text = " ".join(
-                            split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
-                        )
-                        if visible_user_text:
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
-                                f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
-                            )
-                        else:
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
-                            )
                         user_input = expanded
+                        if _show_full_input:
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                        else:
+                            total_lines = expanded.count('\n') + 1
+                            n_pastes = len(paste_refs)
+                            # Show any surrounding user text alongside the paste summary
+                            split_parts = _paste_ref_re.split(user_input)
+                            visible_user_text = " ".join(
+                                split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
+                            )
+                            if visible_user_text:
+                                ChatConsole().print(
+                                    f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
+                                    f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
+                                )
+                            else:
+                                ChatConsole().print(
+                                    f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
+                                )
                     else:
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if '\n' in user_input:
+                        if _show_full_input and '\n' in user_input:
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                        elif '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
                                 f"[dim](+{line_count - 1} lines)[/]"
                             )
                         else:
-                            print()
-                            ChatConsole().print(_user_bar)
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count
