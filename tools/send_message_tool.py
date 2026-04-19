@@ -73,6 +73,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "filePath": {
+                "type": "string",
+                "description": "Absolute path to a local file to send as an attachment. Supports images, videos, audio, and documents. Currently supported platforms: telegram, discord, feishu, weixin."
             }
         },
         "required": []
@@ -103,8 +107,21 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    file_path = args.get("filePath", "")
+
+    # Build media_files from filePath parameter
+    extra_media_files = []
+    if file_path:
+        if not os.path.isfile(file_path):
+            return json.dumps({"error": f"File not found: {file_path}"})
+        ext = os.path.splitext(file_path)[1].lower()
+        is_voice = ext in _VOICE_EXTS
+        extra_media_files = [(file_path, is_voice)]
+        if not message:
+            message = ""
+
+    if not target or (not message and not extra_media_files):
+        return tool_error("Both 'target' and 'message' are required when action='send' (or provide 'filePath' instead of 'message')")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -176,6 +193,12 @@ def _handle_send(args):
     from gateway.platforms.base import BasePlatformAdapter
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    # Merge in filePath-based media
+    if extra_media_files:
+        existing_paths = {mf[0] for mf in media_files}
+        for mf in extra_media_files:
+            if mf[0] not in existing_paths:
+                media_files.append(mf)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -404,19 +427,35 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram/Discord platforms ---
-    if media_files and not message.strip():
+    # --- Feishu: special handling for media attachments ---
+    if platform == Platform.FEISHU:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_feishu(
+                pconfig, chat_id, chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- Non-Telegram/Discord/Feishu platforms ---
+    _MEDIA_CAPABLE = {Platform.TELEGRAM, Platform.DISCORD, Platform.FEISHU, Platform.WEIXIN}
+    if media_files and not message.strip() and platform not in _MEDIA_CAPABLE:
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, and weixin; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, feishu, and weixin; "
                 f"target {platform.value} had only media attachments"
             )
         }
     warning = None
-    if media_files:
+    if media_files and platform not in _MEDIA_CAPABLE:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, and weixin"
+            "native send_message media delivery is currently only supported for telegram, discord, feishu, and weixin"
         )
 
     last_result = None
@@ -439,8 +478,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
