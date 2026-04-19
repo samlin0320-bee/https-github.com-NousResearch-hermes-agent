@@ -86,6 +86,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from iteration_limits import parse_iteration_limit
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -2842,12 +2843,17 @@ class GatewayRunner:
         if getattr(event, "internal", False):
             pass
         elif source.user_id is None:
-            # Messages with no user identity (Telegram service messages,
-            # channel forwards, anonymous admin actions) cannot be
-            # authorized — drop silently instead of triggering the pairing
-            # flow with a None user_id.
-            logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-            return None
+            # Some test/platform shims create DM/group sources without a user_id.
+            # Allow those through only when the configured auth layer explicitly
+            # authorizes them; otherwise keep dropping true service/anonymous
+            # messages silently instead of triggering pairing with a None user_id.
+            try:
+                if not self._is_user_authorized(source):
+                    logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+                    return None
+            except Exception:
+                logger.debug("Ignoring message with unusable no-user_id source from %s", source.platform.value)
+                return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
@@ -6128,7 +6134,7 @@ class GatewayRunner:
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = parse_iteration_limit(os.getenv("HERMES_MAX_ITERATIONS", "90"), default=90)
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -8235,7 +8241,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -8247,7 +8253,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _release_running_agent_state(self, session_key: str) -> None:
@@ -9047,7 +9053,7 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = parse_iteration_limit(os.getenv("HERMES_MAX_ITERATIONS", "90"), default=90)
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

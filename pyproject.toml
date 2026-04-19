@@ -17,9 +17,11 @@ dependencies = [
   "python-dotenv>=1.2.1,<2",
   "fire>=0.7.1,<1",
   "httpx[socks]>=0.28.1,<1",
+  "websockets>=15.0.1,<16",
   "rich>=14.3.3,<15",
   "tenacity>=9.1.4,<10",
   "pyyaml>=6.0.2,<7",
+  "tzdata>=2025.2,<2027",  # ZoneInfo data for Termux/Windows/containers without system tzdb
   "requests>=2.33.0,<3",  # CVE-2026-25645
   "jinja2>=3.1.5,<4",
   "pydantic>=2.12.5,<3",
@@ -76,6 +78,13 @@ termux = [
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
 ]
+android = [
+  # Dedicated APK / embedded-Python lane. Keep this separate from [termux]
+  # so the app only pulls the API-server runtime dependencies it needs.
+  # Chaquopy currently exposes aiohttp wheels only up to the 3.10 line.
+  "aiohttp>=3.10.10,<4",
+  "croniter>=6.0.0,<7",
+]
 dingtalk = ["dingtalk-stream>=0.20,<1", "alibabacloud-dingtalk>=2.0.0", "qrcode>=7.0,<8"]
 feishu = ["lark-oapi>=1.5.3,<2", "qrcode>=7.0,<8"]
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
@@ -120,13 +129,28 @@ hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "iteration_limits", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = [
+  "agent",
+  "tools",
+  "tools.*",
+  "hermes_cli",
+  "gateway",
+  "gateway.*",
+  "tui_gateway",
+  "tui_gateway.*",
+  "cron",
+  "acp_adapter",
+  "plugins",
+  "plugins.*",
+  "hermes_android",
+  "hermes_android.*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

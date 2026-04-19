@@ -67,6 +67,7 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_CHATGPT_WEB_BASE_URL = "https://chatgpt.com/backend-api/f"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -119,6 +120,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenAI Codex",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
+    ),
+    "chatgpt-web": ProviderConfig(
+        id="chatgpt-web",
+        name="ChatGPT Web",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_CHATGPT_WEB_BASE_URL,
     ),
     "qwen-oauth": ProviderConfig(
         id="qwen-oauth",
@@ -1477,6 +1484,33 @@ def _write_codex_cli_tokens(
         logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
 
 
+def _resolve_shared_codex_home() -> Optional[Path]:
+    """Return the shared Codex CLI home when it is safe to consult.
+
+    Tests and custom Hermes profiles often point ``HERMES_HOME`` at an isolated
+    temporary directory while leaving the user's real ``~/.codex/auth.json`` in
+    place. Blindly importing from that shared file makes those isolated stores
+    unexpectedly pick up real local credentials. To keep profile/test state
+    hermetic, only fall back to the default shared Codex home when Hermes is
+    running from the default ``~/.hermes`` root, or when the caller explicitly
+    opted in via ``CODEX_HOME``.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if codex_home:
+        return Path(codex_home).expanduser()
+
+    hermes_home = get_hermes_home().expanduser()
+    default_hermes_home = (Path.home() / ".hermes").expanduser()
+    try:
+        if hermes_home.resolve() != default_hermes_home.resolve():
+            return None
+    except Exception:
+        if str(hermes_home) != str(default_hermes_home):
+            return None
+
+    return Path.home() / ".codex"
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -1610,14 +1644,14 @@ def _refresh_codex_auth_tokens(
 
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
-    
+
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
     """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
+    codex_home = _resolve_shared_codex_home()
+    if codex_home is None:
+        return None
+    auth_path = codex_home / "auth.json"
     if not auth_path.is_file():
         return None
     try:
@@ -2572,6 +2606,73 @@ def get_codex_auth_status() -> Dict[str, Any]:
         }
 
 
+def get_chatgpt_web_auth_status() -> Dict[str, Any]:
+    """Status snapshot for ChatGPT Web auth.
+
+    Prefers explicit ChatGPT Web credentials, then ChatGPT Web pool entries,
+    then falls back to Codex OAuth credentials.
+    """
+    access_token = os.getenv("CHATGPT_WEB_ACCESS_TOKEN", "").strip()
+    session_token = os.getenv("CHATGPT_WEB_SESSION_TOKEN", "").strip()
+    if access_token:
+        return {
+            "logged_in": True,
+            "auth_mode": "access_token",
+            "source": "env:CHATGPT_WEB_ACCESS_TOKEN",
+            "api_key": access_token,
+        }
+    if session_token:
+        return {
+            "logged_in": True,
+            "auth_mode": "session_token",
+            "source": "env:CHATGPT_WEB_SESSION_TOKEN",
+            "api_key": "",
+        }
+
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("chatgpt-web")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = str(
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                    or ""
+                ).strip()
+                session_token = str(getattr(entry, "session_token", "") or "").strip()
+                if api_key and not _codex_access_token_is_expiring(api_key, 0):
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": getattr(entry, "auth_type", None) or "oauth",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+                if session_token:
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": "session_token",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+    except Exception:
+        pass
+
+    codex_status = get_codex_auth_status()
+    if codex_status.get("logged_in"):
+        return {
+            **codex_status,
+            "auth_mode": "codex_oauth",
+            "source": codex_status.get("source") or "codex-oauth",
+        }
+    return codex_status
+
+
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -2640,6 +2741,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "chatgpt-web":
+        return get_chatgpt_web_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
     if target == "google-gemini-cli":

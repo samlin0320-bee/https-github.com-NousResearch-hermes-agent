@@ -51,6 +51,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Add project root to path before importing repo-top modules
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from iteration_limits import parse_iteration_limit
 
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
@@ -69,9 +74,14 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(PROJECT_ROOT))
+def _parse_max_turns_arg(value: str):
+    try:
+        return parse_iteration_limit(value, default=None)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "max turns must be a positive integer or 'unlimited'"
+        ) from exc
+
 
 
 # ---------------------------------------------------------------------------
@@ -1495,6 +1505,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "chatgpt-web":
+        _model_flow_chatgpt_web(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "google-gemini-cli":
@@ -2240,7 +2252,52 @@ def _model_flow_openai_codex(config, current_model=""):
     else:
         print("No change.")
 
+def _model_flow_chatgpt_web(config, current_model=""):
+    """ChatGPT Web provider: reuse ChatGPT auth, then pick a web-app model slug."""
+    from hermes_cli.auth import (
+        get_chatgpt_web_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        _login_openai_codex,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.chatgpt_web import (
+        DEFAULT_CHATGPT_WEB_BASE_URL,
+        fetch_chatgpt_web_model_ids,
+        resolve_chatgpt_web_runtime_credentials,
+    )
+    import argparse
 
+    status = get_chatgpt_web_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into ChatGPT Web. Starting OpenAI login...")
+        print()
+        try:
+            mock_args = argparse.Namespace()
+            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    access_token = None
+    try:
+        creds = resolve_chatgpt_web_runtime_credentials()
+        access_token = creds.get("api_key")
+    except Exception:
+        pass
+
+    web_models = fetch_chatgpt_web_model_ids(access_token=access_token)
+    selected = _prompt_model_selection(web_models, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("chatgpt-web", DEFAULT_CHATGPT_WEB_BASE_URL)
+        print(f"Default model set to: {selected} (via ChatGPT Web)")
+    else:
+        print("No change.")
 _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
     "qwen3-coder",
@@ -6415,6 +6472,7 @@ For more help on a command:
             "openrouter",
             "nous",
             "openai-codex",
+            "chatgpt-web",
             "copilot-acp",
             "copilot",
             "anthropic",
@@ -6476,10 +6534,10 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--max-turns",
-        type=int,
+        type=_parse_max_turns_arg,
         default=None,
-        metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
+        metavar="N|unlimited",
+        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config). Accepts 'unlimited'."
     )
     chat_parser.add_argument(
         "--yolo",
@@ -6742,7 +6800,7 @@ For more help on a command:
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "chatgpt-web"],
         default=None,
         help="Provider to authenticate with (default: nous)",
     )
@@ -6788,7 +6846,7 @@ For more help on a command:
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "chatgpt-web"],
         default=None,
         help="Provider to log out from (default: active provider)",
     )
@@ -6845,6 +6903,12 @@ For more help on a command:
         "reset", help="Clear exhaustion status for all credentials for a provider"
     )
     auth_reset.add_argument("provider", help="Provider id")
+    auth_browser = auth_subparsers.add_parser("browser", help="Bootstrap auth by launching a local browser session")
+    auth_browser.add_argument("provider", nargs="?", default="chatgpt-web", choices=["chatgpt-web"], help="Provider id (currently only chatgpt-web)")
+    auth_browser.add_argument("--label", help="Optional display label for the stored credential")
+    auth_browser.add_argument("--timeout", type=int, default=15 * 60, help="How long to wait for the browser login flow in seconds")
+    auth_browser.add_argument("--debug-port", type=int, default=9222, help="Local Chromium remote-debugging port")
+    auth_browser.add_argument("--keep-open", action="store_true", help="Leave the browser/X11 session running after auth completes")
     auth_parser.set_defaults(func=cmd_auth)
 
     # =========================================================================

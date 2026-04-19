@@ -55,7 +55,20 @@ def _make_mock_parent(depth=0):
     return parent
 
 
-class TestDelegateRequirements(unittest.TestCase):
+class _DelegateConfigIsolatedTestCase(unittest.TestCase):
+    """Keep delegate-tool tests independent from ambient ~/.hermes config."""
+
+    def setUp(self):
+        super().setUp()
+        self._delegate_cfg_patcher = patch("tools.delegate_tool._load_config", return_value={})
+        self._delegate_cfg_patcher.start()
+
+    def tearDown(self):
+        self._delegate_cfg_patcher.stop()
+        super().tearDown()
+
+
+class TestDelegateRequirements(_DelegateConfigIsolatedTestCase):
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
 
@@ -70,7 +83,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
-class TestChildSystemPrompt(unittest.TestCase):
+class TestChildSystemPrompt(_DelegateConfigIsolatedTestCase):
     def test_goal_only(self):
         prompt = _build_child_system_prompt("Fix the tests")
         self.assertIn("Fix the tests", prompt)
@@ -88,7 +101,7 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertNotIn("CONTEXT", prompt)
 
 
-class TestStripBlockedTools(unittest.TestCase):
+class TestStripBlockedTools(_DelegateConfigIsolatedTestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
         self.assertEqual(sorted(result), ["file", "terminal"])
@@ -102,7 +115,7 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
-class TestDelegateTask(unittest.TestCase):
+class TestDelegateTask(_DelegateConfigIsolatedTestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
@@ -303,7 +316,7 @@ class TestDelegateTask(unittest.TestCase):
         parent.tool_progress_callback.assert_not_called()
 
 
-class TestToolNamePreservation(unittest.TestCase):
+class TestToolNamePreservation(_DelegateConfigIsolatedTestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
 
     def test_global_tool_names_restored_after_delegation(self):
@@ -399,7 +412,7 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(captured["saved"], expected_tools)
 
 
-class TestDelegateObservability(unittest.TestCase):
+class TestDelegateObservability(_DelegateConfigIsolatedTestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 
     def test_observability_fields_present(self):
@@ -562,7 +575,7 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
 
-class TestBlockedTools(unittest.TestCase):
+class TestBlockedTools(_DelegateConfigIsolatedTestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
@@ -572,7 +585,7 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(MAX_DEPTH, 2)
 
 
-class TestDelegationCredentialResolution(unittest.TestCase):
+class TestDelegationCredentialResolution(_DelegateConfigIsolatedTestCase):
     """Tests for provider:model credential resolution in delegation config."""
 
     def test_no_provider_returns_none_credentials(self):
@@ -621,14 +634,28 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "qwen2.5-coder",
             "provider": "openrouter",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
         }
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["model"], "qwen2.5-coder")
         self.assertEqual(creds["provider"], "custom")
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
-        self.assertEqual(creds["api_key"], "local-key")
+        self.assertEqual(creds["api_key"], "delegation-token")
         self.assertEqual(creds["api_mode"], "chat_completions")
+
+    def test_direct_endpoint_detects_chatgpt_web_api_mode(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "gpt-5-thinking",
+            "base_url": "https://chatgpt.com/backend-api/f",
+            "api_key": "chatgpt-web-token",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "gpt-5-thinking")
+        self.assertEqual(creds["provider"], "chatgpt-web")
+        self.assertEqual(creds["base_url"], "https://chatgpt.com/backend-api/f")
+        self.assertEqual(creds["api_key"], "chatgpt-web-token")
+        self.assertEqual(creds["api_mode"], "chatgpt_web")
 
     def test_direct_endpoint_falls_back_to_openai_api_key_env(self):
         parent = _make_mock_parent(depth=0)
@@ -711,7 +738,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
-class TestDelegationProviderIntegration(unittest.TestCase):
+class TestDelegationProviderIntegration(_DelegateConfigIsolatedTestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 
     @patch("tools.delegate_tool._load_config")
@@ -793,13 +820,13 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             "max_iterations": 45,
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
         }
         mock_creds.return_value = {
             "model": "qwen2.5-coder",
             "provider": "custom",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
             "api_mode": "chat_completions",
         }
         parent = _make_mock_parent(depth=0)
@@ -817,7 +844,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["model"], "qwen2.5-coder")
             self.assertEqual(kwargs["provider"], "custom")
             self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
-            self.assertEqual(kwargs["api_key"], "local-key")
+            self.assertEqual(kwargs["api_key"], "delegation-token")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
     @patch("tools.delegate_tool._load_config")
@@ -847,6 +874,37 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_delegate_task_clamps_low_max_iterations_for_child_summary_turn(self, mock_creds, mock_cfg):
+        """Subagents need at least one tool turn plus one summary turn."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use the terminal tool to print the current working directory.",
+                toolsets=["terminal"],
+                max_iterations=1,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["max_iterations"], 2)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -938,7 +996,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
 
-class TestChildCredentialPoolResolution(unittest.TestCase):
+class TestChildCredentialPoolResolution(_DelegateConfigIsolatedTestCase):
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
@@ -1009,7 +1067,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             self.assertEqual(mock_child._credential_pool, mock_pool)
 
 
-class TestChildCredentialLeasing(unittest.TestCase):
+class TestChildCredentialLeasing(_DelegateConfigIsolatedTestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 
@@ -1060,7 +1118,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
 
 
-class TestDelegateHeartbeat(unittest.TestCase):
+class TestDelegateHeartbeat(_DelegateConfigIsolatedTestCase):
     """Heartbeat propagates child activity to parent during delegation.
 
     Without the heartbeat, the gateway inactivity timeout fires because the
@@ -1214,7 +1272,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
             f"Heartbeat should include last_activity_desc: {touch_calls}")
 
 
-class TestDelegationReasoningEffort(unittest.TestCase):
+class TestDelegationReasoningEffort(_DelegateConfigIsolatedTestCase):
     """Tests for delegation.reasoning_effort config override."""
 
     @patch("tools.delegate_tool._load_config")
