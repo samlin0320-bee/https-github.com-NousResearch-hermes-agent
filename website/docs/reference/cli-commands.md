@@ -175,6 +175,14 @@ Subcommands:
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
 
+The `start`, `stop`, and `restart` subcommands accept `--all` for multi-profile environments:
+
+| Option | Subcommands | Description |
+|--------|-------------|-------------|
+| `--all` | `start` | Kill all stale gateway processes across all profiles before starting the current profile's service. |
+| `--all` | `stop` | Stop gateway processes across all profiles, not just the current one. |
+| `--all` | `restart` | Stop all gateway processes across all profiles, then start the current profile's service fresh. |
+
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
 :::
