@@ -6857,7 +6857,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                fast_mode=(getattr(self, "request_overrides", None) or {}).get("speed") == "fast",
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -6944,7 +6944,7 @@ class AIAgent:
             elif not is_github_responses and not is_xai_responses:
                 kwargs["include"] = []
 
-            if self.request_overrides:
+            if getattr(self, "request_overrides", None):
                 kwargs.update(self.request_overrides)
 
             if self.max_tokens is not None and not is_codex_backend:
@@ -7157,7 +7157,7 @@ class AIAgent:
 
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
-        if self.request_overrides:
+        if getattr(self, "request_overrides", None):
             api_kwargs.update(self.request_overrides)
 
         return api_kwargs
