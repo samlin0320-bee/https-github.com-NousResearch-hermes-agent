@@ -2109,6 +2109,37 @@ def validate_requested_model(
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
+    # GitHub Copilot: /models may return HTTP 403 for tokens that can still use chat
+    # completions. Fall back to the built-in Copilot catalog when live listing fails.
+    if normalized in {"copilot", "copilot-acp"} and api_models is None:
+        static_models = _PROVIDER_MODELS.get(normalized, [])
+        static_set = set(static_models)
+        if requested_for_lookup in static_set:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        auto = get_close_matches(requested_for_lookup, static_models, n=1, cutoff=0.9)
+        if auto:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "corrected_model": auto[0],
+                "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+            }
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                "Note: GitHub Copilot `/models` could not be fetched (often HTTP 403 on "
+                "listing despite working chat). Hermes saved this model ID; retry if inference fails."
+            ),
+        }
+
     if api_models is not None:
         if requested_for_lookup in set(api_models):
             # API confirmed the model exists

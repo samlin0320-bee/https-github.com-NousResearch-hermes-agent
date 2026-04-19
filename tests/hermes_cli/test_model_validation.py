@@ -481,6 +481,23 @@ class TestValidateApiFallback:
         assert result["accepted"] is False
         assert result["persist"] is False
 
+    def test_copilot_accepts_builtin_catalog_when_models_unreachable(self):
+        """Copilot /models can 403 while chat works; fall back to static list (#12086)."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=None):
+            result = validate_requested_model("gpt-5.4", "copilot", api_key="token")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result.get("message") is None
+
+    def test_copilot_unknown_model_persists_when_models_unreachable(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None):
+            result = validate_requested_model("future-unknown-model", "copilot", api_key="token")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "could not be fetched" in result["message"]
+
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(
             "hermes_cli.models.probe_api_models",
