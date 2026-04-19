@@ -220,8 +220,9 @@ def _is_oauth_token(key: str) -> bool:
     Positively identifies Anthropic OAuth tokens by their key format:
     - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
     - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
+    - ``cc-`` prefix → Claude Code OAuth access tokens (from CLAUDE_CODE_OAUTH_TOKEN)
 
-    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match either pattern
+    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match any pattern
     and correctly return False.
     """
     if not key:
@@ -234,6 +235,9 @@ def _is_oauth_token(key: str) -> bool:
         return True
     # JWTs from Anthropic OAuth flow
     if key.startswith("eyJ"):
+        return True
+    # Claude Code OAuth access tokens (opaque, from CLAUDE_CODE_OAUTH_TOKEN)
+    if key.startswith("cc-"):
         return True
     return False
 
