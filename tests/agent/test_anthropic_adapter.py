@@ -1655,3 +1655,101 @@ class TestToolChoice:
             tool_choice="search",
         )
         assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}
+
+
+# ---------------------------------------------------------------------------
+# Bug condition exploration: Bedrock model ID dot preservation
+# ---------------------------------------------------------------------------
+
+
+class TestBedrockDotPreservation:
+    """Exploration tests for Bedrock model ID normalization bug.
+
+    Bedrock model IDs use dots as vendor separators (e.g. anthropic.claude-sonnet-4-6).
+    These tests encode the EXPECTED (correct) behavior — they will fail on unfixed code
+    (confirming the bug) and pass after the fix.
+
+    Validates: Requirements 1.1, 1.2, 1.3, 2.1, 2.2, 2.3
+    """
+
+    @pytest.mark.parametrize("model_id", [
+        "anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-sonnet-4-6",
+        "anthropic.claude-sonnet-4-6-v2:0",
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ])
+    def test_bedrock_model_ids_preserve_dots(self, model_id):
+        """normalize_model_name() with preserve_dots=True must return Bedrock IDs unchanged."""
+        result = normalize_model_name(model_id, preserve_dots=True)
+        assert result == model_id, (
+            f"Expected Bedrock model ID to pass through unchanged, "
+            f"but got {result!r} instead of {model_id!r}"
+        )
+
+    def test_bedrock_provider_preserves_dots(self):
+        """_anthropic_preserve_dots() must return True for bedrock provider."""
+        from run_agent import AIAgent
+
+        agent = SimpleNamespace(provider="bedrock", base_url="")
+        result = AIAgent._anthropic_preserve_dots(agent)
+        assert result is True, (
+            "_anthropic_preserve_dots() returned False for bedrock provider — "
+            "this confirms the root cause: bedrock is missing from the provider set"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Preservation: Non-Bedrock provider normalization unchanged
+# ---------------------------------------------------------------------------
+
+
+class TestNonBedrockPreservation:
+    """Preservation tests confirming non-Bedrock providers are unaffected.
+
+    These tests capture baseline behavior on UNFIXED code and must continue
+    to pass after the fix (no regressions).
+
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+        ("claude-opus-4.5", "claude-opus-4-5"),
+        ("anthropic/claude-opus-4.6", "claude-opus-4-6"),
+    ])
+    def test_anthropic_dot_to_hyphen_preserved(self, model, expected):
+        """normalize_model_name() with preserve_dots=False must convert dots to hyphens."""
+        result = normalize_model_name(model, preserve_dots=False)
+        assert result == expected, (
+            f"Expected {expected!r}, got {result!r}"
+        )
+
+    @pytest.mark.parametrize("provider", [
+        "alibaba",
+        "minimax",
+        "minimax-cn",
+        "opencode-go",
+        "opencode-zen",
+        "zai",
+    ])
+    def test_dot_preserving_providers_still_true(self, provider):
+        """_anthropic_preserve_dots() must return True for known dot-preserving providers."""
+        from run_agent import AIAgent
+
+        agent = SimpleNamespace(provider=provider, base_url="")
+        result = AIAgent._anthropic_preserve_dots(agent)
+        assert result is True, (
+            f"_anthropic_preserve_dots() returned False for {provider!r} — "
+            f"expected True"
+        )
+
+    def test_anthropic_provider_does_not_preserve_dots(self):
+        """_anthropic_preserve_dots() must return False for native anthropic provider."""
+        from run_agent import AIAgent
+
+        agent = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com")
+        result = AIAgent._anthropic_preserve_dots(agent)
+        assert result is False, (
+            "_anthropic_preserve_dots() returned True for native anthropic — "
+            "expected False"
+        )

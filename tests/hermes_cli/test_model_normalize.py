@@ -191,3 +191,59 @@ class TestDetectVendor:
     ])
     def test_detects_known_vendors(self, model, expected):
         assert detect_vendor(model) == expected
+
+
+# ---------------------------------------------------------------------------
+# Bug condition exploration: Bedrock model ID preservation
+# ---------------------------------------------------------------------------
+
+
+class TestBedrockModelIdPreservation:
+    """Exploration tests for Bedrock model ID normalization bug.
+
+    Bedrock model IDs are already in their native AWS format and must pass
+    through normalize_model_for_provider() unchanged.
+
+    Validates: Requirements 2.1, 2.2, 2.3
+    """
+
+    @pytest.mark.parametrize("model_id", [
+        "anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-sonnet-4-6",
+        "anthropic.claude-sonnet-4-6-v2:0",
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ])
+    def test_bedrock_model_ids_pass_through(self, model_id):
+        """normalize_model_for_provider() with provider='bedrock' must return IDs unchanged."""
+        result = normalize_model_for_provider(model_id, "bedrock")
+        assert result == model_id, (
+            f"Expected Bedrock model ID to pass through unchanged, "
+            f"but got {result!r} instead of {model_id!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Preservation: Non-Bedrock provider normalization unchanged
+# ---------------------------------------------------------------------------
+
+
+class TestNonBedrockPreservation:
+    """Preservation tests confirming non-Bedrock providers are unaffected.
+
+    These tests capture baseline behavior on UNFIXED code and must continue
+    to pass after the fix (no regressions).
+
+    Validates: Requirements 3.1, 3.2, 3.3, 3.4
+    """
+
+    @pytest.mark.parametrize("model,provider,expected", [
+        ("claude-sonnet-4.6", "anthropic", "claude-sonnet-4-6"),
+        ("claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
+        ("glm-4.5", "copilot", "glm-4.5"),
+    ])
+    def test_non_bedrock_providers_unchanged(self, model, provider, expected):
+        """normalize_model_for_provider() must produce expected results for non-Bedrock providers."""
+        result = normalize_model_for_provider(model, provider)
+        assert result == expected, (
+            f"Expected {expected!r} for ({model!r}, {provider!r}), got {result!r}"
+        )
