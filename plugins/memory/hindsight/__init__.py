@@ -560,6 +560,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local_embedded":
             def _start_daemon():
                 import traceback
+                from hermes_constants import get_hermes_home
                 log_dir = get_hermes_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
