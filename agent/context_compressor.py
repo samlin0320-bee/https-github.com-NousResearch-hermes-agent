@@ -146,7 +146,9 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "write_file":
         path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        written_lines = (
+            args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        )
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":
@@ -162,8 +164,14 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         mode = args.get("mode", "replace")
         return f"[patch] {mode} in {path} ({content_len:,} chars result)"
 
-    if tool_name in ("browser_navigate", "browser_click", "browser_snapshot",
-                     "browser_type", "browser_scroll", "browser_vision"):
+    if tool_name in (
+        "browser_navigate",
+        "browser_click",
+        "browser_snapshot",
+        "browser_type",
+        "browser_scroll",
+        "browser_vision",
+    ):
         url = args.get("url", "")
         ref = args.get("ref", "")
         detail = f" {url}" if url else (f" ref={ref}" if ref else "")
@@ -303,7 +311,9 @@ class ContextCompressor(ContextEngine):
         self.quiet_mode = quiet_mode
 
         self.context_length = get_model_context_length(
-            model, base_url=base_url, api_key=api_key,
+            model,
+            base_url=base_url,
+            api_key=api_key,
             config_context_length=config_context_length,
             provider=provider,
         )
@@ -321,7 +331,8 @@ class ContextCompressor(ContextEngine):
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
         self.tail_token_budget = target_tokens
         self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            int(self.context_length * 0.05),
+            _SUMMARY_TOKENS_CEILING,
         )
 
         if not quiet_mode:
@@ -329,10 +340,14 @@ class ContextCompressor(ContextEngine):
                 "Context compressor initialized: model=%s context_length=%d "
                 "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
-                model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                model,
+                self.context_length,
+                self.threshold_tokens,
+                threshold_percent * 100,
+                self.summary_target_ratio * 100,
                 self.tail_token_budget,
-                provider or "none", base_url or "none",
+                provider or "none",
+                base_url or "none",
             )
         self._context_probed = False  # True after a step-down from context error
 
@@ -380,7 +395,9 @@ class ContextCompressor(ContextEngine):
     # ------------------------------------------------------------------
 
     def _prune_old_tool_results(
-        self, messages: List[Dict[str, Any]], protect_tail_count: int,
+        self,
+        messages: List[Dict[str, Any]],
+        protect_tail_count: int,
         protect_tail_tokens: int | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
@@ -416,7 +433,10 @@ class ContextCompressor(ContextEngine):
                     if isinstance(tc, dict):
                         cid = tc.get("id", "")
                         fn = tc.get("function", {})
-                        call_id_to_tool[cid] = (fn.get("name", "unknown"), fn.get("arguments", ""))
+                        call_id_to_tool[cid] = (
+                            fn.get("name", "unknown"),
+                            fn.get("arguments", ""),
+                        )
                     else:
                         cid = getattr(tc, "id", "") or ""
                         fn = getattr(tc, "function", None)
@@ -433,13 +453,20 @@ class ContextCompressor(ContextEngine):
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 raw_content = msg.get("content") or ""
-                content_len = sum(len(p.get("text", "")) for p in raw_content) if isinstance(raw_content, list) else len(raw_content)
+                content_len = (
+                    sum(len(p.get("text", "")) for p in raw_content)
+                    if isinstance(raw_content, list)
+                    else len(raw_content)
+                )
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
                         args = tc.get("function", {}).get("arguments", "")
                         msg_tokens += len(args) // _CHARS_PER_TOKEN
-                if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
+                if (
+                    accumulated + msg_tokens > protect_tail_tokens
+                    and (len(result) - i) >= min_protect
+                ):
                     boundary = i
                     break
                 accumulated += msg_tokens
@@ -465,7 +492,10 @@ class ContextCompressor(ContextEngine):
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
                 # This is an older duplicate — replace with back-reference
-                result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
+                result[i] = {
+                    **msg,
+                    "content": "[Duplicate tool output — same content as a more recent call]",
+                }
                 pruned += 1
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
@@ -492,6 +522,7 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "content": summary}
                 pruned += 1
 
+        # Pass 3: Truncate large tool_call arguments while keeping valid JSON
         # Pass 3: Truncate large tool_call arguments in assistant messages
         # outside the protected tail. write_file with 50KB content, for
         # example, survives pruning entirely without this.
@@ -504,8 +535,41 @@ class ContextCompressor(ContextEngine):
             msg = result[i]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
                 continue
+            
             new_tcs = []
             modified = False
+            for tc in msg.get("tool_calls", []):
+                if not isinstance(tc, dict):
+                    new_tcs.append(tc)
+                    continue
+                
+                func = tc.get("function", {})
+                args_str = func.get("arguments", "")
+                
+                if len(args_str) > 500:
+                    # Try to parse and truncate while keeping valid JSON
+                    try:
+                        import json
+                        args_obj = json.loads(args_str)
+                        
+                        # Truncate string values
+                        for key, value in args_obj.items():
+                            if isinstance(value, str) and len(value) > 200:
+                                args_obj[key] = value[:200] + "...[truncated]"
+                        
+                        # Re-serialize to valid JSON
+                        func["arguments"] = json.dumps(args_obj, ensure_ascii=False)
+                        modified = True
+                    except json.JSONDecodeError:
+                        # If can't parse, drop this tool_call but keep message
+                        pruned.append(msg)
+                        modified = True
+                        break
+                else:
+                    new_tcs.append(tc)
+            
+            if modified and new_tcs:
+                msg["tool_calls"] = new_tcs
             for tc in msg["tool_calls"]:
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
@@ -538,11 +602,11 @@ class ContextCompressor(ContextEngine):
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
-    _CONTENT_MAX = 6000       # total chars per message body
-    _CONTENT_HEAD = 4000      # chars kept from the start
-    _CONTENT_TAIL = 1500      # chars kept from the end
-    _TOOL_ARGS_MAX = 1500     # tool call argument chars
-    _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+    _CONTENT_MAX = 6000  # total chars per message body
+    _CONTENT_HEAD = 4000  # chars kept from the start
+    _CONTENT_TAIL = 1500  # chars kept from the end
+    _TOOL_ARGS_MAX = 1500  # tool call argument chars
+    _TOOL_ARGS_HEAD = 1200  # kept from the start of tool args
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -560,14 +624,22 @@ class ContextCompressor(ContextEngine):
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                    content = (
+                        content[: self._CONTENT_HEAD]
+                        + "\n...[truncated]...\n"
+                        + content[-self._CONTENT_TAIL :]
+                    )
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
                 if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                    content = (
+                        content[: self._CONTENT_HEAD]
+                        + "\n...[truncated]...\n"
+                        + content[-self._CONTENT_TAIL :]
+                    )
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -578,7 +650,7 @@ class ContextCompressor(ContextEngine):
                             args = fn.get("arguments", "")
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
+                                args = args[: self._TOOL_ARGS_HEAD] + "..."
                             tc_parts.append(f"  {name}({args})")
                         else:
                             fn = getattr(tc, "function", None)
@@ -590,12 +662,18 @@ class ContextCompressor(ContextEngine):
 
             # User and other roles
             if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = (
+                    content[: self._CONTENT_HEAD]
+                    + "\n...[truncated]...\n"
+                    + content[-self._CONTENT_TAIL :]
+                )
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(
+        self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -733,6 +811,9 @@ FOCUS TOPIC: "{focus_topic}"
 The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget."""
 
         try:
+            from agent.auxiliary_client import _validate_messages_json
+
+            messages = _validate_messages_json([{"role": "user", "content": prompt}])
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
@@ -742,7 +823,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "api_key": self.api_key,
                     "api_mode": self.api_mode,
                 },
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": messages,
                 "max_tokens": int(summary_budget * 1.3),
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
@@ -761,18 +842,24 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
-            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
-            logging.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary "
-                            "for %d seconds.",
-                            _SUMMARY_FAILURE_COOLDOWN_SECONDS)
+            self._summary_failure_cooldown_until = (
+                time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            )
+            logging.warning(
+                "Context compression: no provider available for "
+                "summary. Middle turns will be dropped without summary "
+                "for %d seconds.",
+                _SUMMARY_FAILURE_COOLDOWN_SECONDS,
+            )
             return None
         except Exception as e:
             # If the summary model is different from the main model and the
             # error looks permanent (model not found, 503, 404), fall back to
             # using the main model instead of entering cooldown that leaves
             # context growing unbounded.  (#8620 sub-issue 4)
-            _status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            _status = getattr(e, "status_code", None) or getattr(
+                getattr(e, "response", None), "status_code", None
+            )
             _err_str = str(e).lower()
             _is_model_not_found = (
                 _status in (404, 503)
@@ -790,15 +877,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 logging.warning(
                     "Summary model '%s' not available (%s). "
                     "Falling back to main model '%s' for compression.",
-                    self.summary_model, e, self.model,
+                    self.summary_model,
+                    e,
+                    self.model,
                 )
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0  # no cooldown
-                return self._generate_summary(messages, summary_budget)  # retry immediately
+                return self._generate_summary(
+                    messages, summary_budget
+                )  # retry immediately
 
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
-            self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
+            self._summary_failure_cooldown_until = (
+                time.monotonic() + _transient_cooldown
+            )
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -813,7 +906,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         text = (summary or "").strip()
         for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
             if text.startswith(prefix):
-                text = text[len(prefix):].lstrip()
+                text = text[len(prefix) :].lstrip()
                 break
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
@@ -828,7 +921,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return tc.get("id", "")
         return getattr(tc, "id", "") or ""
 
-    def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _sanitize_tool_pairs(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
 
         Two failure modes:
@@ -861,11 +956,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
             messages = [
-                m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                m
+                for m in messages
+                if not (
+                    m.get("role") == "tool"
+                    and m.get("tool_call_id") in orphaned_results
+                )
             ]
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
+                logger.info(
+                    "Compression sanitizer: removed %d orphaned tool result(s)",
+                    len(orphaned_results),
+                )
 
         # 2. Add stub results for assistant tool_calls whose results were dropped
         missing_results = surviving_call_ids - result_call_ids
@@ -877,14 +979,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     for tc in msg.get("tool_calls") or []:
                         cid = self._get_tool_call_id(tc)
                         if cid in missing_results:
-                            patched.append({
-                                "role": "tool",
-                                "content": "[Result from earlier conversation — see context summary above]",
-                                "tool_call_id": cid,
-                            })
+                            patched.append(
+                                {
+                                    "role": "tool",
+                                    "content": "[Result from earlier conversation — see context summary above]",
+                                    "tool_call_id": cid,
+                                }
+                            )
             messages = patched
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
+                logger.info(
+                    "Compression sanitizer: added %d stub tool result(s)",
+                    len(missing_results),
+                )
 
         return messages
 
@@ -918,7 +1025,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             check -= 1
         # If we landed on the parent assistant with tool_calls, pull the
         # boundary before it so the whole group gets summarised together.
-        if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
+        if (
+            check >= 0
+            and messages[check].get("role") == "assistant"
+            and messages[check].get("tool_calls")
+        ):
             idx = check
         return idx
 
@@ -983,7 +1094,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return max(last_user_idx, head_end + 1)
 
     def _find_tail_cut_by_tokens(
-        self, messages: List[Dict[str, Any]], head_end: int,
+        self,
+        messages: List[Dict[str, Any]],
+        head_end: int,
         token_budget: int | None = None,
     ) -> int:
         """Walk backward from the end of messages, accumulating tokens until
@@ -1049,7 +1162,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+    ) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1075,15 +1193,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.warning(
                     "Cannot compress: only %d messages (need > %d)",
-                    n_messages, _min_for_compress,
+                    n_messages,
+                    _min_for_compress,
                 )
             return messages
 
-        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        display_tokens = (
+            current_tokens
+            if current_tokens
+            else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        )
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n,
+            messages,
+            protect_tail_count=self.protect_last_n,
             protect_tail_tokens=self.tail_token_budget,
         )
         if pruned_count and not self.quiet_mode:
@@ -1141,7 +1265,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # knows context was lost rather than silently dropping everything.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
+                logger.warning(
+                    "Summary generation failed — inserting static fallback context marker"
+                )
             n_dropped = compress_end - compress_start
             summary = (
                 f"{SUMMARY_PREFIX}\n"
@@ -1152,8 +1278,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-        first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+        last_head_role = (
+            messages[compress_start - 1].get("role", "user")
+            if compress_start > 0
+            else "user"
+        )
+        first_tail_role = (
+            messages[compress_end].get("role", "user")
+            if compress_end < n_messages
+            else "user"
+        )
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
         if last_head_role in ("assistant", "tool"):
@@ -1180,8 +1314,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if _merge_summary_into_tail and i == compress_end:
                 original = msg.get("content") or ""
                 msg["content"] = (
-                    summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
+                    summary + "\n\n--- END OF CONTEXT SUMMARY — "
                     "respond to the message below, not the summary above ---\n\n"
                     + original
                 )
@@ -1196,7 +1329,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness
-        savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+        savings_pct = (
+            (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+        )
         self._last_compression_savings_pct = savings_pct
         if savings_pct < 10:
             self._ineffective_compression_count += 1
