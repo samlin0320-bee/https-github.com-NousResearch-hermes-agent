@@ -2487,10 +2487,14 @@ class AIAgent:
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
                         model=self.model,
+                        base_url=self.base_url,
+                        api_key=self.api_key,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        api_mode=self.api_mode,
+                        credential_pool=self._credential_pool,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -7495,6 +7499,7 @@ class AIAgent:
                     tools=[memory_tool_def],
                     temperature=_flush_temperature,
                     max_tokens=5120,
+                    main_runtime=self._current_main_runtime(),
                     # timeout resolved from auxiliary.flush_memories.timeout config
                 )
             except RuntimeError:
