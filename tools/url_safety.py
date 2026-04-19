@@ -23,6 +23,8 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
 # Hostnames that should always be blocked regardless of IP resolution
 _BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal",
@@ -70,6 +72,8 @@ def is_safe_url(url: str) -> bool:
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         scheme = (parsed.scheme or "").strip().lower()
+        if scheme not in _ALLOWED_SCHEMES:
+            return False
         if not hostname:
             return False
 
