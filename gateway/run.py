@@ -10298,6 +10298,8 @@ class GatewayRunner:
                 elif pending_event:
                     pending = pending_event.text or _build_media_placeholder(pending_event)
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                elif result.get("pending_steer"):
+                    pending = result.get("pending_steer")
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
