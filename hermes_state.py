@@ -737,7 +737,14 @@ class SessionDB:
         params = []
 
         if not include_children:
-            where_clauses.append("s.parent_session_id IS NULL")
+            # Hide subagent delegation children, but show compression continuations.
+            # Compression continuations have parent_session_id pointing to a session
+            # with end_reason='compression' — these should appear in the session list
+            # since they are the active continuation of a conversation.
+            where_clauses.append(
+                "(s.parent_session_id IS NULL OR "
+                "s.parent_session_id IN (SELECT id FROM sessions WHERE end_reason = 'compression'))"
+            )
 
         if source:
             where_clauses.append("s.source = ?")

@@ -1354,6 +1354,54 @@ class TestListSessionsRich:
 # Session source exclusion (--source flag for third-party isolation)
 # =========================================================================
 
+class TestCompressionContinuationVisibility:
+    """Tests for showing compression continuations while hiding subagent children."""
+
+    def test_subagent_children_hidden_by_default(self, db):
+        """Subagent children (parent_session_id set) should be hidden by default."""
+        db.create_session("parent", "cli")
+        db.create_session("child", "cli", parent_session_id="parent")
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "parent" in ids
+        assert "child" not in ids
+
+    def test_subagent_children_visible_with_include_children(self, db):
+        """Subagent children should be visible when include_children=True."""
+        db.create_session("parent", "cli")
+        db.create_session("child", "cli", parent_session_id="parent")
+        sessions = db.list_sessions_rich(include_children=True)
+        ids = [s["id"] for s in sessions]
+        assert "parent" in ids
+        assert "child" in ids
+
+    def test_compression_continuation_visible_by_default(self, db):
+        """Compression continuations should be visible in the session list even
+        though they have a parent_session_id, because they represent the active
+        branch of an ongoing conversation."""
+        db.create_session("original", "cli")
+        db.end_session("original", "compression")
+        db.create_session("continuation", "cli", parent_session_id="original")
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "original" in ids
+        assert "continuation" in ids
+
+    def test_mixed_parent_sessions(self, db):
+        """Root sessions, compression continuations visible; subagent children hidden."""
+        db.create_session("root", "cli")
+        db.create_session("compressed_orig", "cli")
+        db.end_session("compressed_orig", "compression")
+        db.create_session("continuation", "cli", parent_session_id="compressed_orig")
+        db.create_session("subagent", "cli", parent_session_id="root")
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "root" in ids
+        assert "compressed_orig" in ids
+        assert "continuation" in ids
+        assert "subagent" not in ids
+
+
 class TestExcludeSources:
     """Tests for exclude_sources on list_sessions_rich and search_messages."""
 
