@@ -120,6 +120,7 @@ _MARKDOWN_HINT_RE = re.compile(
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
+_OUTBOUND_MENTION_RE = re.compile(r"@ou_[a-zA-Z0-9]+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -430,17 +431,24 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
+    # Split content by @ou_xxx mentions, then interleave at elements with plain text
+    parts: List[Any] = []
+    last_end = 0
+    for match in _OUTBOUND_MENTION_RE.finditer(content):
+        before = content[last_end : match.start()]
+        if before:
+            parts.append([{"tag": "md", "text": before}])
+        user_id = match.group(0)[1:]  # strip leading @
+        parts.append([{"tag": "at", "user_id": user_id}])
+        last_end = match.end()
+    if last_end < len(content):
+        parts.append([{"tag": "md", "text": content[last_end:]}])
+    if not parts:
+        parts.append([{"tag": "md", "text": content}])
     return json.dumps(
         {
             "zh_cn": {
-                "content": [
-                    [
-                        {
-                            "tag": "md",
-                            "text": content,
-                        }
-                    ]
-                ],
+                "content": parts,
             }
         },
         ensure_ascii=False,
@@ -3364,7 +3372,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        if _MARKDOWN_HINT_RE.search(content):
+        if _MARKDOWN_HINT_RE.search(content) or _OUTBOUND_MENTION_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
