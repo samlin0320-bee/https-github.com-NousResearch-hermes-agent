@@ -24,6 +24,7 @@ Agent workflow:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,9 +32,21 @@ from pathlib import Path
 try:
     from hermes_constants import display_hermes_home, get_hermes_home
 except ModuleNotFoundError:
-    HERMES_AGENT_ROOT = Path(__file__).resolve().parents[4]
-    if HERMES_AGENT_ROOT.exists():
-        sys.path.insert(0, str(HERMES_AGENT_ROOT))
+    # Walk up to HERMES_HOME; fall back to HERMES_HOME/hermes-agent/ for installed layout.
+    _hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    _found = False
+    for _parent in Path(__file__).resolve().parents:
+        if (_parent / "hermes_constants.py").exists():
+            sys.path.insert(0, str(_parent))
+            _found = True
+            break
+        if _parent == _hermes_home or _parent == _parent.parent:
+            break
+    if not _found:
+        # Installed layout: hermes-agent/ sits directly under HERMES_HOME
+        _agent_root = _hermes_home / "hermes-agent"
+        if (_agent_root / "hermes_constants.py").exists():
+            sys.path.insert(0, str(_agent_root))
     from hermes_constants import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()
@@ -102,17 +115,37 @@ def install_deps():
         pass
 
     print("Installing Google API dependencies...")
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
-            stdout=subprocess.DEVNULL,
-        )
-        print("Dependencies installed.")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to install dependencies: {e}")
-        print(f"Try manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
-        return False
+
+    # Prefer uv — bypasses PEP 668 externally-managed-environment restriction.
+    uv_path = shutil.which("uv")
+    if uv_path:
+        try:
+            subprocess.check_call(
+                [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + REQUIRED_PACKAGES,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print("Dependencies installed.")
+            return True
+        except subprocess.CalledProcessError:
+            pass  # uv failed — fall through to pip
+
+    # pip fallback: plain → --user (PEP 668 safe).
+    for extra_flags in [[], ["--user"]]:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet"] + extra_flags + REQUIRED_PACKAGES,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print("Dependencies installed.")
+            return True
+        except subprocess.CalledProcessError:
+            continue
+
+    print("ERROR: Failed to install dependencies.")
+    print(f"Try manually: uv pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
+    return False
 
 
 def _ensure_deps():
