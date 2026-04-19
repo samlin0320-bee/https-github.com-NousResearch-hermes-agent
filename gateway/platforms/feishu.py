@@ -1141,6 +1141,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        self._typing_state: Dict[str, tuple[str, Optional[str]]] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1704,7 +1705,80 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Feishu bot API does not expose a typing indicator."""
+        """Show a typing indicator by adding a reaction to the inbound message."""
+        if not self._client:
+            return None
+
+        current = self._typing_state.get(chat_id)
+        if not current:
+            return None
+
+        message_id, reaction_id = current
+        if reaction_id:
+            return None
+
+        try:
+            from lark_oapi.api.im.v1 import (
+                CreateMessageReactionRequest,
+                CreateMessageReactionRequestBody,
+            )
+            body = (
+                CreateMessageReactionRequestBody.builder()
+                .reaction_type({"emoji_type": "Typing"})
+                .build()
+            )
+            request = (
+                CreateMessageReactionRequest.builder()
+                .message_id(message_id)
+                .request_body(body)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
+            if response and getattr(response, "success", lambda: False)():
+                reaction_id = getattr(getattr(response, "data", None), "reaction_id", None)
+                if reaction_id:
+                    self._typing_state[chat_id] = (message_id, reaction_id)
+                    return None
+            logger.warning(
+                "[Feishu] Failed to add typing reaction on %s: code=%s msg=%s",
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to add typing reaction on %s", message_id, exc_info=True)
+        return None
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Remove the typing-indicator reaction added by ``send_typing``."""
+        current = self._typing_state.pop(chat_id, None)
+        if not current:
+            return None
+
+        message_id, reaction_id = current
+        if not self._client or not reaction_id:
+            return None
+
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                return None
+            logger.warning(
+                "[Feishu] Failed to remove typing reaction %s on %s: code=%s msg=%s",
+                reaction_id,
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to remove typing reaction on %s", message_id, exc_info=True)
         return None
 
     async def send_image(
@@ -2290,6 +2364,9 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id = event.message_id
             if message_id:
                 await self._add_ack_reaction(message_id)
+                raw_event = getattr(getattr(event, "raw_message", None), "event", None)
+                if chat_id and getattr(raw_event, "message", None) is not None:
+                    self._typing_state[chat_id] = (message_id, None)
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
