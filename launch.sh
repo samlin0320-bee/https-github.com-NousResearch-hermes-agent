@@ -33,6 +33,7 @@ API_SERVER_HOST=0.0.0.0
 API_SERVER_CORS_ORIGINS=http://localhost:3001,http://localhost:3000,http://127.0.0.1:3001
 WEB_TOOLS_DEBUG=false
 VISION_TOOLS_DEBUG=false
+OBSIDIAN_VAULT_PATH=${HOME}/Documents/ObsidianVault
 ENVEOF
 ok ".env 完成"
 
@@ -188,7 +189,102 @@ cat > "$HOME/.hermes/memories/USER.md" << 'USEREOF'
 USEREOF
 ok "記憶檔案完成"
 
-# ── 6. 安裝 Ollama + 越獄 Gemma 模型（背景）─────────────
+# ── 6a. 建立 Obsidian Vault + Daily Note 模板 ─────────────
+run "建立 Obsidian Vault 與 Daily Note 模板..."
+OBSIDIAN_VAULT="${HOME}/Documents/ObsidianVault"
+mkdir -p "$OBSIDIAN_VAULT/Daily Notes"
+mkdir -p "$OBSIDIAN_VAULT/Templates"
+
+cat > "$OBSIDIAN_VAULT/Templates/Daily Note.md" << 'OBSEOF'
+---
+date: {{date:YYYY-MM-DD}}
+week: {{date:YYYY-[W]WW}}
+tags: [daily]
+---
+
+## ✅ 今日完成
+
+-
+
+## 🔄 進行中
+
+-
+
+## 📋 明日待辦
+
+-
+
+## 💬 今日摘要
+
+>
+
+---
+_由 Hermes Agent 自動生成 · {{date:YYYY-MM-DD HH:mm}}_
+OBSEOF
+ok "Obsidian 模板完成 → $OBSIDIAN_VAULT/Templates/Daily Note.md"
+
+# 初始化 Obsidian vault 為 git repo（如果還不是）
+if [ ! -d "$OBSIDIAN_VAULT/.git" ]; then
+    git -C "$OBSIDIAN_VAULT" init -q
+    git -C "$OBSIDIAN_VAULT" add -A
+    git -C "$OBSIDIAN_VAULT" -c user.email="hermes@local" -c user.name="Hermes" \
+        commit -q -m "init: Obsidian vault" --allow-empty 2>/dev/null || true
+fi
+ok "Obsidian Vault git repo 初始化完成"
+
+# ── 6b. 建立每日 11 PM Cron Job ────────────────────────────
+run "建立每日 11 PM 交辦事項 Cron Job..."
+mkdir -p "$HOME/.hermes/cron"
+python3 - << 'PYEOF'
+import json, pathlib, uuid, os
+
+jobs_path = pathlib.Path.home() / ".hermes" / "cron" / "jobs.json"
+jobs_path.parent.mkdir(parents=True, exist_ok=True)
+
+JOB_NAME = "每日交辦事項記錄"
+
+# Load existing jobs
+if jobs_path.exists():
+    try:
+        jobs = json.loads(jobs_path.read_text())
+    except Exception:
+        jobs = []
+else:
+    jobs = []
+
+# Remove any existing job with same name to avoid duplicates
+jobs = [j for j in jobs if j.get("name") != JOB_NAME]
+
+vault = os.path.expanduser("~/Documents/ObsidianVault")
+job = {
+    "id": str(uuid.uuid4()),
+    "name": JOB_NAME,
+    "schedule": {
+        "type": "cron",
+        "value": "0 23 * * *",
+        "display": "每天晚上 11:00"
+    },
+    "deliver": ["telegram", "local"],
+    "skills": ["note-taking/obsidian", "github/github-repo-management"],
+    "enabled": True,
+    "prompt": (
+        f"每天晚上執行以下五步驟，記錄今日交辦事項：\n\n"
+        f"1. 從今日的 session logs 與 memory 收集所有完成、進行中、待辦事項\n"
+        f"2. 套用 Daily Note 模板（YAML frontmatter + ✅今日完成 / 🔄進行中 / 📋明日待辦 / 💬今日摘要），"
+        f"用今天日期 YYYY-MM-DD 填入 date 欄位\n"
+        f"3. 將筆記存到 Obsidian vault：{vault}/Daily Notes/YYYY-MM-DD.md\n"
+        f"4. 在 {vault} 執行 git add、git commit（訊息：'daily: YYYY-MM-DD 交辦事項'）、git push\n"
+        f"5. 透過 Telegram 傳送今日摘要給使用者"
+    )
+}
+
+jobs.append(job)
+jobs_path.write_text(json.dumps(jobs, ensure_ascii=False, indent=2))
+print(f"  Cron job '{JOB_NAME}' 已建立，ID: {job['id']}")
+PYEOF
+ok "每日 11 PM Cron Job 完成"
+
+# ── 8. 安裝 Ollama + 越獄 Gemma 模型（背景）─────────────
 OLLAMA_MODEL="hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M"
 install_ollama_bg() {
     # 安裝 Ollama（如果沒有）
@@ -212,7 +308,7 @@ run "Ollama 越獄 Gemma 安裝中（背景）..."
 install_ollama_bg &
 ok "背景下載中 → tail -f /tmp/ollama-pull.log"
 
-# ── 7. 安裝 Hermes HUD UI ─────────────────────────────────
+# ── 9. 安裝 Hermes HUD UI ─────────────────────────────────
 HUD_DIR="$(dirname "$SCRIPT_DIR")/hermes-hudui"
 if [ ! -d "$HUD_DIR" ]; then
     run "安裝 Hermes HUD UI..."
@@ -227,7 +323,7 @@ else
     ok "HUD UI 已安裝"
 fi
 
-# ── 8. 啟動 HUD UI ────────────────────────────────────────
+# ── 10. 啟動 HUD UI ───────────────────────────────────────
 run "啟動 HUD UI (port 3001)..."
 pkill -f "hermes-hudui" 2>/dev/null || true
 sleep 1
@@ -239,7 +335,7 @@ curl -sf http://localhost:3001 -o /dev/null 2>/dev/null \
     && ok "HUD UI 啟動成功 → http://localhost:3001" \
     || echo -e "${YELLOW}⚠${NC}  HUD UI 啟動中... → tail -f /tmp/hermes-hudui.log"
 
-# ── 9. 啟動 Hermes Gateway ────────────────────────────────
+# ── 11. 啟動 Hermes Gateway ───────────────────────────────
 run "啟動 Hermes Gateway（Telegram + API Server）..."
 pkill -f "hermes gateway" 2>/dev/null || true
 sleep 1
@@ -273,18 +369,20 @@ fi
 
 # ── 完成 ───────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║           ✅ 全部完成                        ║${NC}"
-echo -e "${GREEN}╠══════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  🖥  HUD UI      http://localhost:3001        ║${NC}"
-echo -e "${GREEN}║  🔌 API          http://localhost:8080        ║${NC}"
-echo -e "${GREEN}║  ✈  Telegram    bot 已啟動                   ║${NC}"
-echo -e "${GREEN}║  🤖 主要模型     gemini-2.0-flash             ║${NC}"
-echo -e "${GREEN}║  🦙 備援模型     Ollama 越獄 Gemma（下載中）  ║${NC}"
-echo -e "${GREEN}║  🛠  技能         全部開放（含 godmode）       ║${NC}"
-echo -e "${GREEN}║  🧠 人格         SOUL.md 已設定               ║${NC}"
-echo -e "${GREEN}║  💾 記憶         MEMORY.md + USER.md 已建立   ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║             ✅ 全部完成                        ║${NC}"
+echo -e "${GREEN}╠════════════════════════════════════════════════╣${NC}"
+echo -e "${GREEN}║  🖥  HUD UI      http://localhost:3001          ║${NC}"
+echo -e "${GREEN}║  🔌 API          http://localhost:8080          ║${NC}"
+echo -e "${GREEN}║  ✈  Telegram    bot 已啟動                     ║${NC}"
+echo -e "${GREEN}║  🤖 主要模型     gemini-2.0-flash               ║${NC}"
+echo -e "${GREEN}║  🦙 備援模型     Ollama 越獄 Gemma（下載中）    ║${NC}"
+echo -e "${GREEN}║  🛠  技能         全部開放（含 godmode）         ║${NC}"
+echo -e "${GREEN}║  🧠 人格         SOUL.md 已設定                 ║${NC}"
+echo -e "${GREEN}║  💾 記憶         MEMORY.md + USER.md 已建立     ║${NC}"
+echo -e "${GREEN}║  📓 Obsidian     ~/Documents/ObsidianVault      ║${NC}"
+echo -e "${GREEN}║  ⏰ Cron         每晚 23:00 自動記錄交辦事項    ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "  log 監控："
 echo "    Gateway:  tail -f /tmp/hermes-gateway.log"
