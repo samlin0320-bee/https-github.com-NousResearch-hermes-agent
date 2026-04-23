@@ -1155,6 +1155,43 @@ strong {
     }
 }
 
+/* --- YouTube Video Section --- */
+.section-video {
+    background: linear-gradient(180deg, var(--bg) 0%, rgba(18, 24, 42, 0.6) 100%);
+}
+
+.section-subtitle {
+    color: var(--text-dim);
+    font-size: 1.05rem;
+    margin-top: 0.5rem;
+    max-width: 520px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.video-wrapper {
+    position: relative;
+    padding-bottom: 56.25%; /* 16:9 aspect ratio */
+    height: 0;
+    overflow: hidden;
+    border-radius: var(--radius);
+    border: 1px solid var(--border-hover);
+    background: var(--bg-card);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+    max-width: 860px;
+    margin: 0 auto;
+}
+
+.youtube-embed {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: var(--radius);
+}
+
 /* --- Selection --- */
 ::selection {
     background: rgba(48, 80, 255, 0.25);
