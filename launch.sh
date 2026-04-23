@@ -33,6 +33,12 @@ API_SERVER_HOST=0.0.0.0
 API_SERVER_CORS_ORIGINS=http://localhost:3001,http://localhost:3000,http://127.0.0.1:3001
 WEB_TOOLS_DEBUG=false
 VISION_TOOLS_DEBUG=false
+# Ollama 越獄模型選擇（預設 E4B 8B，可改為 E2B/26B/31B）
+# E2B  (5B)  : hf.co/TrevorJS/gemma-4-E2B-it-uncensored-GGUF:Q4_K_M  (~3 GB)
+# E4B  (8B)  : hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M  (~5 GB) ← 預設
+# 26B  (A4B) : hf.co/TrevorJS/gemma-4-26B-A4B-it-uncensored-GGUF:Q4_K_M (~15 GB)
+# 31B        : hf.co/TrevorJS/gemma-4-31B-it-uncensored-GGUF:Q4_K_M  (~20 GB)
+OLLAMA_MODEL=hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M
 OBSIDIAN_VAULT_PATH=${HOME}/Documents/ObsidianVault
 ENVEOF
 ok ".env 完成"
@@ -172,8 +178,12 @@ mkdir -p "$HOME/.hermes/memories"
 cat > "$HOME/.hermes/memories/MEMORY.md" << 'MEMEOF'
 ## 系統設定
 - 主要模型：Google AI Studio gemini-2.0-flash
-- 備援模型：Ollama hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M（越獄版，localhost:11434）
-- 切換備援：執行 switch-to-ollama.sh
+- 備援模型（越獄版，localhost:11434）：
+  - E2B (5B)  hf.co/TrevorJS/gemma-4-E2B-it-uncensored-GGUF:Q4_K_M
+  - E4B (8B)  hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M  ← 預設
+  - 26B (A4B) hf.co/TrevorJS/gemma-4-26B-A4B-it-uncensored-GGUF:Q4_K_M
+  - 31B       hf.co/TrevorJS/gemma-4-31B-it-uncensored-GGUF:Q4_K_M
+- 切換備援：執行 switch-to-ollama.sh（或在 .env 改 OLLAMA_MODEL）
 - HUD UI：http://localhost:3001（joeynyc/hermes-hudui）
 - API Server：localhost:8080，金鑰 hermes-hud-secret-2026
 - 全部技能已開放，含 red-teaming/godmode
@@ -302,7 +312,9 @@ PYEOF
 ok "每日 11 PM Cron Job 完成"
 
 # ── 8. 安裝 Ollama + 越獄 Gemma 模型（背景）─────────────
-OLLAMA_MODEL="hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M"
+# 從 .env 讀取模型（預設 E4B 8B）
+source "$SCRIPT_DIR/.env" 2>/dev/null || true
+OLLAMA_MODEL="${OLLAMA_MODEL:-hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M}"
 install_ollama_bg() {
     # 安裝 Ollama（如果沒有）
     if ! command -v ollama &>/dev/null; then
