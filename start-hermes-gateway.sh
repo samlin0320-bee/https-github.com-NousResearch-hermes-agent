@@ -26,9 +26,20 @@ if [[ "$1" == "--ollama" ]]; then
     bash "$SCRIPT_DIR/switch-to-ollama.sh"
 fi
 
+# ── Start Hermes HUD UI ────────────────────────────────────────────────────
+HUD_DIR="$(dirname "$SCRIPT_DIR")/hermes-hudui"
+if [ -d "$HUD_DIR/venv" ]; then
+    echo "Starting Hermes HUD UI..."
+    source "$HUD_DIR/venv/bin/activate"
+    hermes-hudui --port 3001 > /tmp/hermes-hudui.log 2>&1 &
+    deactivate 2>/dev/null || true
+    echo "  HUD UI:  http://localhost:3001"
+fi
+
 echo "Starting Hermes gateway..."
 echo "  Telegram:   enabled (bot token configured)"
 echo "  API server: http://0.0.0.0:${API_SERVER_PORT:-8080} (for HUD UI)"
+echo "  HUD UI:     http://localhost:3001"
 echo ""
 echo "Press Ctrl+C to stop."
 echo ""
