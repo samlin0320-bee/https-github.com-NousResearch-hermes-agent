@@ -45,6 +45,14 @@ else
     ok "Hermes 已安裝"
 fi
 
+# ── 2b. 預先下載 Whisper tiny STT 模型 ────────────────────
+run "預先下載 Whisper STT 模型（tiny，約 75 MB）..."
+"$SCRIPT_DIR/venv/bin/python" -c "
+from faster_whisper import WhisperModel
+WhisperModel('tiny', device='cpu', compute_type='int8')
+print('STT 模型就緒')
+" 2>/dev/null && ok "Whisper tiny 模型已就緒" || echo -e "${YELLOW}⚠${NC}  STT 模型下載失敗（語音功能在首次使用時才下載）"
+
 # ── 3. 寫入 ~/.hermes/config.yaml ─────────────────────────
 run "設定 Hermes 模型（全技能開放）..."
 mkdir -p "$HOME/.hermes"
@@ -105,6 +113,13 @@ compression:
 # ── 技能：全開，不停用任何技能 ─────────────────────────────
 # 所有平台（包括 Telegram）都啟用全部技能
 # 含 red-teaming/godmode、dogfood、domain、inference-sh 等
+
+# ── STT 語音轉文字（Telegram 語音訊息）────────────────────
+stt:
+  enabled: true
+  provider: "local"
+  local:
+    model: "tiny"
 YAMLEOF
 ok "config.yaml 完成（全技能開放）"
 
@@ -162,6 +177,8 @@ cat > "$HOME/.hermes/memories/MEMORY.md" << 'MEMEOF'
 - HUD UI：http://localhost:3001（joeynyc/hermes-hudui）
 - API Server：localhost:8080，金鑰 hermes-hud-secret-2026
 - 全部技能已開放，含 red-teaming/godmode
+- STT 語音轉文字：faster-whisper tiny（本地，免費，無需 API key）
+- Telegram 語音訊息：直接傳語音即可，自動轉文字後回覆
 
 ## 工作目錄
 - Hermes 主目錄：~/https-github.com-NousResearch-hermes-agent
@@ -380,6 +397,7 @@ echo -e "${GREEN}║  🦙 備援模型     Ollama 越獄 Gemma（下載中）  
 echo -e "${GREEN}║  🛠  技能         全部開放（含 godmode）         ║${NC}"
 echo -e "${GREEN}║  🧠 人格         SOUL.md 已設定                 ║${NC}"
 echo -e "${GREEN}║  💾 記憶         MEMORY.md + USER.md 已建立     ║${NC}"
+echo -e "${GREEN}║  🎤 語音         Whisper tiny STT 已就緒         ║${NC}"
 echo -e "${GREEN}║  📓 Obsidian     ~/Documents/ObsidianVault      ║${NC}"
 echo -e "${GREEN}║  ⏰ Cron         每晚 23:00 自動記錄交辦事項    ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
