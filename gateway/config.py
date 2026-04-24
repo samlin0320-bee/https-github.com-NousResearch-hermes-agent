@@ -648,8 +648,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         if Platform.TELEGRAM not in config.platforms:
+            # Auto-enable only when not explicitly configured in config.yaml
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
-        config.platforms[Platform.TELEGRAM].enabled = True
+            config.platforms[Platform.TELEGRAM].enabled = True
         config.platforms[Platform.TELEGRAM].token = telegram_token
     
     # Reply threading mode for Telegram (off/first/all)
