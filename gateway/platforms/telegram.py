@@ -1053,7 +1053,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send document: {e}")
+            logger.error("[%s] Failed to send document: %s", self.name, e, exc_info=True)
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
 
     async def send_video(
@@ -1084,7 +1084,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send video: {e}")
+            logger.error("[%s] Failed to send video: %s", self.name, e, exc_info=True)
             return await super().send_video(chat_id, video_path, caption, reply_to)
 
     async def send_image(
@@ -2119,8 +2119,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else None,
-            user_name=user.full_name if user else None,
+            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
+            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )
