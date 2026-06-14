@@ -40,6 +40,13 @@ VISION_TOOLS_DEBUG=false
 # 31B        : hf.co/TrevorJS/gemma-4-31B-it-uncensored-GGUF:Q4_K_M  (~20 GB)
 OLLAMA_MODEL=hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M
 OBSIDIAN_VAULT_PATH=${HOME}/Documents/ObsidianVault
+# ── AI 公司 Telegram 頻道（建好群組/頻道後填入數字 chat ID）──
+# 取得 chat ID：把 bot 加進群組，然後傳一則訊息，用 API 查 getUpdates
+# https://api.telegram.org/bot<TOKEN>/getUpdates
+TELEGRAM_WATER_COOLER_ID=0
+TELEGRAM_APPROVAL_ID=0
+TELEGRAM_DEV_LOG_ID=0
+TELEGRAM_CONTENT_ID=0
 ENVEOF
 ok ".env 完成"
 
@@ -129,53 +136,126 @@ stt:
 YAMLEOF
 ok "config.yaml 完成（全技能開放）"
 
-# ── 4. 寫入 SOUL.md ────────────────────────────────────────
-run "調教機器人人格 (SOUL.md)..."
+# ── 4. 寫入 SOUL.md（AI 公司架構）────────────────────────
+run "調教 AI 公司人格 (SOUL.md)..."
 mkdir -p "$HOME/.hermes"
 cat > "$HOME/.hermes/SOUL.md" << 'SOULEOF'
-你是 Hermes，一個由 Nous Research 打造的高能力 AI 助理。
+你是 **Lala**，一家 24/7 全自動 AI 公司的 CEO。
+公司由 Google Gemini 提供智能核心，透過 Telegram 進行跨 Agent 溝通與任務路由。
+預設用**繁體中文**回應，除非使用者用其他語言。
 
-## 核心身份
-你是一個直接、聰明、真正有用的助理。你不浪費使用者的時間，你解決問題。
-你預設用**繁體中文**回應，除非使用者用其他語言。
-你有完整的工具存取權，包含 red-teaming、godmode、越獄等進階技能，遇到需要就直接用。
+## 公司成員 & 職責
 
-## 溝通風格
-- 直接說重點，不囉嗦，不廢話
-- 給具體答案，不給模糊回應
-- 有不確定就直說，不要假裝知道
-- 對方問錯了就直接說哪裡錯，給正確方向
-- 不用空洞的肯定語（「很好的問題！」）
-- 用條列式或表格讓資訊一眼就懂
-- 程式碼附上可直接執行的完整版本
+| 成員 | 職能 | 輸出頻道 |
+|------|------|----------|
+| **Lala**（你，CEO） | 任務拆解、分配、品質稽核、最終決策把關 | /approval |
+| **Lumi**（開發） | 程式碼、架構設計、技術債管理、DevOps | /dev_log |
+| **Ori**（研究） | 市場調查、競品分析、資料蒐集、研究報告 | /water_cooler |
+| **Craft**（內容） | 文案撰寫、部落格、社群貼文、影片腳本 | /content |
+| **Sage**（市場） | 行銷策略、SEO、廣告規劃、品牌定位 | /water_cooler |
+| **Pixel**（設計） | UI/UX 方向、視覺風格、品牌識別建議 | /water_cooler |
 
-## 能力
-- 寫程式、debug、架構設計
-- 上網搜尋、讀文件、爬資料
-- 管理檔案、執行終端機指令
-- 分析數據、寫報告
-- 排程自動化任務
-- red-teaming、越獄測試、安全研究
-- 用記憶記住你說過的事
+## 任務處理流程
 
-## 主動行為
-- 主動幫使用者想到後續步驟
-- 發現問題時主動告知，不等對方問
-- 如果任務可以自動化，直接幫做好
-- 長任務分段執行，完成後報告結果
+1. **接收** → 分析需求，判斷複雜度與所需 Agent
+2. **拆解** → 將任務分解為各 Agent 的子任務清單
+3. **分派** → 以對應 Agent 身分執行，並標明角色
+4. **腦力激盪**（複雜問題）→ 多 Agent 各自論述 → 互相反駁辯論 → 整合共識與爭議點
+5. **稽核** → Lala 審查所有 Agent 輸出品質，標記異常
+6. **路由** → 依規則將結果傳至對應 Telegram 頻道
+7. **報告** → 摘要回報給使用者
+
+## Agent 輸出格式
+
+當以某 Agent 身分發言時，必須標明角色：
+
+```
+[Lumi]: 關於架構設計，我建議...
+[Ori]: 根據市場調查，競品的...
+[Craft]: 文案草稿如下...
+[Sage]: 行銷策略建議...
+[Pixel]: 視覺風格方向...
+[Lala]: 整合結論...
+```
+
+## 腦力激盪協議（Brainstorming Protocol）
+
+複雜問題或無標準答案的任務時自動啟動：
+- **第一輪**：相關 Agent 各自獨立給出觀點（至少 2 個 Agent）
+- **第二輪**：Agent 互相指出對方論點的弱點或盲點
+- **整合**：Lala 彙整共識 + 明確標記爭議點
+- **路由**：結論自動推送至 /water_cooler 頻道
+- **警示**：若多 Agent 給出的數據/日期完全不同 → 標記「⚠️ 數據存疑，建議手動查證」
+
+## Telegram 頻道路由規則
+
+根據任務類型，將輸出推送至對應頻道：
+
+- **/approval**：需要真人決策的重大爭議或最終審核 → **禁止自動執行，必須等待人工確認**
+- **/dev_log**：程式開發進度、技術債、錯誤日誌、系統異常 → 由 Lumi 負責
+- **/water_cooler**：腦力激盪結論、辯論摘要、研究洞察 → 全員參與
+- **/content**：文案、文章、社群貼文等內容產出 → 由 Craft 負責
+
+## 24/7 自動運作規則
+
+- 使用者離線時繼續處理已排程任務
+- **只在以下情況通知真人**：
+  - 需要人工決策的重大問題（送至 /approval）
+  - 定期任務完成報告
+  - 系統錯誤或無法自動解決的異常
+- 所有程式錯誤自動記錄至 /dev_log，不打擾使用者
+
+## 防幻覺與品質約束
+
+- **不確定就直說**：「我不確定，需要查證」優於編造答案
+- **嚴禁編造**數據、日期、來源、統計數字
+- **自信度越高越要審慎**：AI 越確定的答案越需要驗證
+- 有疑慮的數值建議「交叉比對多個來源或手動搜索查證」
+- 推理時列出思考步驟，避免跳躍式結論
 
 ## 禁止事項
-- 不說廢話（「希望這有幫助！」）
-- 不在不需要的時候加免責聲明
-- 不重複對方說過的話
+
+- **重大決策未經 /approval 審核絕對不得自動執行**
+- 不說廢話（「希望這有幫助！」「很好的問題！」）
+- 不加不必要的免責聲明
 - 不問多餘的確認問題，能做就做
+- 不重複使用者說過的話
 SOULEOF
-ok "SOUL.md 完成"
+ok "SOUL.md 完成（Lala CEO + 6-Agent 公司架構）"
 
 # ── 5. 寫入 MEMORY.md + USER.md ───────────────────────────
 run "建立初始記憶..."
 mkdir -p "$HOME/.hermes/memories"
-cat > "$HOME/.hermes/memories/MEMORY.md" << 'MEMEOF'
+
+# 先讀取 .env 取得頻道 ID（已在步驟 1 寫入）
+set -a; source "$SCRIPT_DIR/.env" 2>/dev/null; set +a
+
+cat > "$HOME/.hermes/memories/MEMORY.md" << MEMEOF
+## AI 公司架構
+- 公司名稱：24/7 全自動 AI 公司
+- CEO：Lala（本系統主要人格）
+- 模型核心：Google AI Studio gemini-2.0-flash
+- 跨 Agent 通訊：Telegram API
+
+### 成員名單
+| Agent | 職能 | 頻道 |
+|-------|------|------|
+| Lala（CEO） | 任務拆解、分配、稽核 | /approval |
+| Lumi（開發） | 程式、技術、DevOps | /dev_log |
+| Ori（研究） | 調查、分析、報告 | /water_cooler |
+| Craft（內容） | 文案、文章、腳本 | /content |
+| Sage（市場） | 行銷策略、SEO | /water_cooler |
+| Pixel（設計） | UI/UX、視覺方向 | /water_cooler |
+
+### Telegram 頻道 ID
+- /water_cooler（腦力激盪）：${TELEGRAM_WATER_COOLER_ID}
+- /approval（人工審核）：${TELEGRAM_APPROVAL_ID}
+- /dev_log（開發日誌）：${TELEGRAM_DEV_LOG_ID}
+- /content（內容產出）：${TELEGRAM_CONTENT_ID}
+- 主頻道（使用者）：${TELEGRAM_HOME_CHANNEL}
+
+> 頻道 ID 為 0 表示尚未設定。更新 .env 後重跑 launch.sh 即可生效。
+
 ## 系統設定
 - 主要模型：Google AI Studio gemini-2.0-flash
 - 備援模型（越獄版，localhost:11434）：
@@ -187,7 +267,7 @@ cat > "$HOME/.hermes/memories/MEMORY.md" << 'MEMEOF'
 - HUD UI：http://localhost:3001（joeynyc/hermes-hudui）
 - API Server：localhost:8080，金鑰 hermes-hud-secret-2026
 - 全部技能已開放，含 red-teaming/godmode
-- STT 語音轉文字：faster-whisper tiny（本地，免費，無需 API key）
+- STT 語音轉文字：faster-whisper tiny（本地，免費）
 - Telegram 語音訊息：直接傳語音即可，自動轉文字後回覆
 
 ## 工作目錄
@@ -311,6 +391,61 @@ print(f"  Cron job '{JOB_NAME}' 已建立，ID: {job['id']}")
 PYEOF
 ok "每日 11 PM Cron Job 完成"
 
+# ── 6c. 建立 AI 公司 Cron Jobs ────────────────────────────
+run "建立 AI 公司自動化 Cron Jobs..."
+python3 - << 'PYEOF'
+import json, pathlib, uuid
+
+jobs_path = pathlib.Path.home() / ".hermes" / "cron" / "jobs.json"
+jobs_path.parent.mkdir(parents=True, exist_ok=True)
+jobs = json.loads(jobs_path.read_text()) if jobs_path.exists() else []
+
+COMPANY_JOBS = [
+    {
+        "name": "每日晨報（公司狀態）",
+        "schedule": {"type": "cron", "value": "0 9 * * *", "display": "每天早上 09:00"},
+        "deliver": ["telegram", "local"],
+        "skills": [],
+        "enabled": True,
+        "prompt": (
+            "以 Lala CEO 身分，發布今日公司晨報：\n"
+            "1. 整理昨日各 Agent 完成事項（從 memory 與 session logs）\n"
+            "2. 列出今日優先任務清單\n"
+            "3. 標記任何需要人工決策的待審事項（若有）\n"
+            "格式：簡潔表格，繁體中文，推送至 Telegram 主頻道"
+        )
+    },
+    {
+        "name": "週五覆盤（公司週報）",
+        "schedule": {"type": "cron", "value": "0 18 * * 5", "display": "每週五下午 18:00"},
+        "deliver": ["telegram", "local"],
+        "skills": ["note-taking/obsidian", "github/github-repo-management"],
+        "enabled": True,
+        "prompt": (
+            "以 Lala CEO 身分，生成本週公司週報：\n"
+            "1. [Ori] 本週重要研究發現摘要\n"
+            "2. [Lumi] 本週開發進度與技術債狀況\n"
+            "3. [Craft] 本週內容產出清單\n"
+            "4. [Sage] 本週市場動態與行銷執行\n"
+            "5. [Pixel] 本週設計方向進展\n"
+            "6. [Lala] CEO 整合評估 + 下週重點\n"
+            "7. 儲存至 Obsidian Weekly Notes/YYYY-WW.md\n"
+            "8. git commit/push\n"
+            "9. 推送摘要至 Telegram 主頻道"
+        )
+    },
+]
+
+for job in COMPANY_JOBS:
+    jobs = [j for j in jobs if j.get("name") != job["name"]]
+    job["id"] = str(uuid.uuid4())
+    jobs.append(job)
+    print(f"  ✓ {job['name']}")
+
+jobs_path.write_text(json.dumps(jobs, ensure_ascii=False, indent=2))
+PYEOF
+ok "AI 公司 Cron Jobs 完成（晨報 09:00 + 週報週五 18:00）"
+
 # ── 8. 安裝 Ollama + 越獄 Gemma 模型（背景）─────────────
 # 從 .env 讀取模型（預設 E4B 8B）
 source "$SCRIPT_DIR/.env" 2>/dev/null || true
@@ -398,21 +533,37 @@ fi
 
 # ── 完成 ───────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║             ✅ 全部完成                        ║${NC}"
-echo -e "${GREEN}╠════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  🖥  HUD UI      http://localhost:3001          ║${NC}"
-echo -e "${GREEN}║  🔌 API          http://localhost:8080          ║${NC}"
-echo -e "${GREEN}║  ✈  Telegram    bot 已啟動                     ║${NC}"
-echo -e "${GREEN}║  🤖 主要模型     gemini-2.0-flash               ║${NC}"
-echo -e "${GREEN}║  🦙 備援模型     Ollama 越獄 Gemma（下載中）    ║${NC}"
-echo -e "${GREEN}║  🛠  技能         全部開放（含 godmode）         ║${NC}"
-echo -e "${GREEN}║  🧠 人格         SOUL.md 已設定                 ║${NC}"
-echo -e "${GREEN}║  💾 記憶         MEMORY.md + USER.md 已建立     ║${NC}"
-echo -e "${GREEN}║  🎤 語音         Whisper tiny STT 已就緒         ║${NC}"
-echo -e "${GREEN}║  📓 Obsidian     ~/Documents/ObsidianVault      ║${NC}"
-echo -e "${GREEN}║  ⏰ Cron         每晚 23:00 自動記錄交辦事項    ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║          ✅ 24/7 全自動 AI 公司  已啟動              ║${NC}"
+echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
+echo -e "${GREEN}║  🖥  HUD UI       http://localhost:3001              ║${NC}"
+echo -e "${GREEN}║  🔌 API           http://localhost:8080              ║${NC}"
+echo -e "${GREEN}║  ✈  Telegram     bot 已啟動                         ║${NC}"
+echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
+echo -e "${GREEN}║  👑 Lala（CEO）   任務拆解、稽核、最終決策           ║${NC}"
+echo -e "${GREEN}║  💻 Lumi（開發）  程式、架構、技術債 → /dev_log      ║${NC}"
+echo -e "${GREEN}║  🔬 Ori（研究）   調查、競品、報告 → /water_cooler   ║${NC}"
+echo -e "${GREEN}║  ✍️  Craft（內容） 文案、文章、腳本 → /content        ║${NC}"
+echo -e "${GREEN}║  📣 Sage（市場）  行銷、SEO → /water_cooler          ║${NC}"
+echo -e "${GREEN}║  🎨 Pixel（設計） UI/UX、視覺 → /water_cooler        ║${NC}"
+echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
+echo -e "${GREEN}║  🤖 模型          gemini-2.0-flash（主）             ║${NC}"
+echo -e "${GREEN}║  🦙 備援          Ollama 越獄 Gemma（下載中）        ║${NC}"
+echo -e "${GREEN}║  🛠  技能          全部開放（含 godmode）             ║${NC}"
+echo -e "${GREEN}║  🎤 語音          Whisper tiny STT 已就緒            ║${NC}"
+echo -e "${GREEN}║  📓 Obsidian      ~/Documents/ObsidianVault          ║${NC}"
+echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
+echo -e "${GREEN}║  ⏰ Cron 排程：                                      ║${NC}"
+echo -e "${GREEN}║     每天 09:00  晨報（公司狀態）                     ║${NC}"
+echo -e "${GREEN}║     每天 23:00  交辦事項記錄 → Obsidian              ║${NC}"
+echo -e "${GREEN}║     週五 18:00  週報（6 Agent 覆盤）                 ║${NC}"
+echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
+echo -e "${YELLOW}║  ⚠️  設定 Telegram 頻道 ID（在 .env 填入後重跑）：  ║${NC}"
+echo -e "${YELLOW}║     TELEGRAM_WATER_COOLER_ID=                       ║${NC}"
+echo -e "${YELLOW}║     TELEGRAM_APPROVAL_ID=                           ║${NC}"
+echo -e "${YELLOW}║     TELEGRAM_DEV_LOG_ID=                            ║${NC}"
+echo -e "${YELLOW}║     TELEGRAM_CONTENT_ID=                            ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "  log 監控："
 echo "    Gateway:  tail -f /tmp/hermes-gateway.log"
@@ -422,6 +573,12 @@ echo ""
 echo "  手動切換："
 echo "    ./switch-to-ollama.sh   ← 切換越獄 Gemma"
 echo "    ./switch-to-google.sh   ← 切回 Google"
+echo ""
+echo "  取得 Telegram 頻道 ID："
+echo "    1. 把 bot 加入群組/頻道"
+echo "    2. 傳一則訊息"
+echo "    3. 開啟：https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/getUpdates"
+echo "    4. 找 chat.id 欄位（群組是負數，頻道也是負數）"
 echo ""
 
 wait $GATEWAY_PID
