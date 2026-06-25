@@ -40,12 +40,10 @@ VISION_TOOLS_DEBUG=false
 # 31B        : hf.co/TrevorJS/gemma-4-31B-it-uncensored-GGUF:Q4_K_M  (~20 GB)
 OLLAMA_MODEL=hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M
 OBSIDIAN_VAULT_PATH=${HOME}/Documents/ObsidianVault
-# ── AI 公司 Telegram 頻道（建好群組/頻道後填入數字 chat ID）──
-# 取得 chat ID：把 bot 加進群組，然後傳一則訊息，用 API 查 getUpdates
-# https://api.telegram.org/bot<TOKEN>/getUpdates
-TELEGRAM_WATER_COOLER_ID=0
-TELEGRAM_APPROVAL_ID=0
-TELEGRAM_DEV_LOG_ID=0
+# ── AI 公司 Telegram 頻道 ─────────────────────────────────
+TELEGRAM_APPROVAL_ID=-1003524949347
+TELEGRAM_DEV_LOG_ID=-1004304403281
+TELEGRAM_WATER_COOLER_ID=-1003976353259
 TELEGRAM_CONTENT_ID=0
 ENVEOF
 ok ".env 完成"
@@ -220,8 +218,43 @@ cat > "$HOME/.hermes/SOUL.md" << 'SOULEOF'
 - 不加不必要的免責聲明
 - 不問多餘的確認問題，能做就做
 - 不重複使用者說過的話
+
+## 頻道推送指令（透過 terminal 技能執行）
+
+當需要推送訊息至特定 Telegram 頻道時，使用以下 curl 指令。
+把 <訊息內容> 替換為實際要發送的內容。
+
+### 推送至 /water_cooler（腦力激盪與研究結論）
+```bash
+curl -s "https://api.telegram.org/bot8784852279:AAEW0q-F6YcXepgOsZsQq0gJnO_HGo56tEI/sendMessage" \
+  -d "chat_id=-1003976353259&parse_mode=Markdown" \
+  --data-urlencode "text=🧠 *Water Cooler*
+<訊息內容>"
+```
+
+### 推送至 /approval（等待人工審核，禁止自動繼續）
+```bash
+curl -s "https://api.telegram.org/bot8784852279:AAEW0q-F6YcXepgOsZsQq0gJnO_HGo56tEI/sendMessage" \
+  -d "chat_id=-1003524949347&parse_mode=Markdown" \
+  --data-urlencode "text=⚠️ *需要人工審核*
+<訊息內容>
+
+請在此頻道回覆 ✅ 批准 或 ❌ 拒絕"
+```
+發出後**停止執行該任務**，等待使用者確認。
+
+### 推送至 /dev_log（程式開發紀錄，由 Lumi 負責）
+```bash
+curl -s "https://api.telegram.org/bot8784852279:AAEW0q-F6YcXepgOsZsQq0gJnO_HGo56tEI/sendMessage" \
+  -d "chat_id=-1004304403281&parse_mode=Markdown" \
+  --data-urlencode "text=🛠 *Dev Log* | Lumi
+<訊息內容>"
+```
+
+### 推送至 /content（內容產出，由 Craft 負責）
+如 TELEGRAM_CONTENT_ID 未設定則跳過此步驟。
 SOULEOF
-ok "SOUL.md 完成（Lala CEO + 6-Agent 公司架構）"
+ok "SOUL.md 完成（Lala CEO + 6-Agent 公司架構 + 頻道推送指令）"
 
 # ── 5. 寫入 MEMORY.md + USER.md ───────────────────────────
 run "建立初始記憶..."
@@ -248,13 +281,20 @@ cat > "$HOME/.hermes/memories/MEMORY.md" << MEMEOF
 | Pixel（設計） | UI/UX、視覺方向 | /water_cooler |
 
 ### Telegram 頻道 ID
-- /water_cooler（腦力激盪）：${TELEGRAM_WATER_COOLER_ID}
-- /approval（人工審核）：${TELEGRAM_APPROVAL_ID}
-- /dev_log（開發日誌）：${TELEGRAM_DEV_LOG_ID}
-- /content（內容產出）：${TELEGRAM_CONTENT_ID}
+- /approval（人工審核）：-1003524949347
+- /dev_log（開發日誌）：-1004304403281
+- /water_cooler（腦力激盪）：-1003976353259
+- /content（內容產出）：尚未設定（在 .env 填入 TELEGRAM_CONTENT_ID）
 - 主頻道（使用者）：${TELEGRAM_HOME_CHANNEL}
 
-> 頻道 ID 為 0 表示尚未設定。更新 .env 後重跑 launch.sh 即可生效。
+### 目前架構
+- Phase 1（已上線）：單一 bot（Lala）模擬 6 個 Agent，透過 curl 路由至各頻道
+- Phase 2（待建）：6 個獨立 bot，各自有 Telegram Bot Token
+  - Lumi bot：填入 .env LUMI_BOT_TOKEN
+  - Ori bot：填入 .env ORI_BOT_TOKEN
+  - Craft bot：填入 .env CRAFT_BOT_TOKEN
+  - Sage bot：填入 .env SAGE_BOT_TOKEN
+  - Pixel bot：填入 .env PIXEL_BOT_TOKEN
 
 ## 系統設定
 - 主要模型：Google AI Studio gemini-2.0-flash
