@@ -41,10 +41,17 @@ VISION_TOOLS_DEBUG=false
 OLLAMA_MODEL=hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M
 OBSIDIAN_VAULT_PATH=${HOME}/Documents/ObsidianVault
 # ── AI 公司 Telegram 頻道 ─────────────────────────────────
-TELEGRAM_APPROVAL_ID=-1003524949347
+TELEGRAM_WATER_COOLER_ID=-1003524949347
 TELEGRAM_DEV_LOG_ID=-1004304403281
-TELEGRAM_WATER_COOLER_ID=-1003976353259
+TELEGRAM_APPROVAL_ID=-1003976353259
 TELEGRAM_CONTENT_ID=0
+# ── Phase 2：6 獨立 bot tokens（從 @BotFather 建立後填入）─
+LALA_BOT_TOKEN=REPLACE_ME
+LUMI_BOT_TOKEN=REPLACE_ME
+ORI_BOT_TOKEN=REPLACE_ME
+CRAFT_BOT_TOKEN=REPLACE_ME
+SAGE_BOT_TOKEN=REPLACE_ME
+PIXEL_BOT_TOKEN=REPLACE_ME
 ENVEOF
 ok ".env 完成"
 
@@ -227,15 +234,15 @@ cat > "$HOME/.hermes/SOUL.md" << 'SOULEOF'
 ### 推送至 /water_cooler（腦力激盪與研究結論）
 ```bash
 curl -s "https://api.telegram.org/bot8784852279:AAEW0q-F6YcXepgOsZsQq0gJnO_HGo56tEI/sendMessage" \
-  -d "chat_id=-1003976353259&parse_mode=Markdown" \
+  -d "chat_id=-1003524949347&parse_mode=Markdown" \
   --data-urlencode "text=🧠 *Water Cooler*
 <訊息內容>"
 ```
 
-### 推送至 /approval（等待人工審核，禁止自動繼續）
+### 推送至 /ai-approval（等待人工審核，禁止自動繼續）
 ```bash
 curl -s "https://api.telegram.org/bot8784852279:AAEW0q-F6YcXepgOsZsQq0gJnO_HGo56tEI/sendMessage" \
-  -d "chat_id=-1003524949347&parse_mode=Markdown" \
+  -d "chat_id=-1003976353259&parse_mode=Markdown" \
   --data-urlencode "text=⚠️ *需要人工審核*
 <訊息內容>
 
@@ -281,9 +288,9 @@ cat > "$HOME/.hermes/memories/MEMORY.md" << MEMEOF
 | Pixel（設計） | UI/UX、視覺方向 | /water_cooler |
 
 ### Telegram 頻道 ID
-- /approval（人工審核）：-1003524949347
+- /water_cooler（腦力激盪）：-1003524949347
 - /dev_log（開發日誌）：-1004304403281
-- /water_cooler（腦力激盪）：-1003976353259
+- /ai-approval（人工審核）：-1003976353259
 - /content（內容產出）：尚未設定（在 .env 填入 TELEGRAM_CONTENT_ID）
 - 主頻道（使用者）：${TELEGRAM_HOME_CHANNEL}
 
