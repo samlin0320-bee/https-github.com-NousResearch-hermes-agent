@@ -23,6 +23,11 @@ x-agent-common: &agent-common
     - ollama
 
 x-agent-env: &agent-env
+  # 強制 UTF-8，避免容器預設 ASCII 遇中文爆 'ascii' codec can't encode
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  LANG: "C.UTF-8"
+  LC_ALL: "C.UTF-8"
   GOOGLE_AI_STUDIO_API_KEY: "${GOOGLE_AI_STUDIO_API_KEY}"
   TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS}"
   TELEGRAM_WATER_COOLER_ID: "${TELEGRAM_WATER_COOLER_ID}"
