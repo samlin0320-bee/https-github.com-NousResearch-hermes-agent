@@ -44,7 +44,7 @@ OBSIDIAN_VAULT_PATH=${HOME}/Documents/ObsidianVault
 TELEGRAM_WATER_COOLER_ID=-1003524949347
 TELEGRAM_DEV_LOG_ID=-1004304403281
 TELEGRAM_APPROVAL_ID=-1003976353259
-TELEGRAM_CONTENT_ID=0
+TELEGRAM_CONTENT_ID=-1004315195434
 # ── 6 獨立 Agent bot tokens（AI 公司架構）────────────────
 LALA_BOT_TOKEN=8957839082:AAEWZAdQWLycUSq197y-AU1K0jXlJQYjEUc
 LUMI_BOT_TOKEN=8864424266:AAH7nxabLoPGxaUZJBE50L9KgWxgLRDfC8U
@@ -299,7 +299,7 @@ cat > "$HOME/.hermes/memories/MEMORY.md" << MEMEOF
 - /water_cooler（腦力激盪）：-1003524949347
 - /dev_log（開發日誌）：-1004304403281
 - /ai-approval（人工審核）：-1003976353259
-- /content（內容產出）：尚未設定（在 .env 填入 TELEGRAM_CONTENT_ID）
+- /content（內容產出）：-1004315195434
 - 主頻道（使用者）：${TELEGRAM_HOME_CHANNEL}
 
 ### 目前架構
@@ -613,11 +613,11 @@ echo -e "${GREEN}║     每天 09:00  晨報（公司狀態）                 
 echo -e "${GREEN}║     每天 23:00  交辦事項記錄 → Obsidian              ║${NC}"
 echo -e "${GREEN}║     週五 18:00  週報（6 Agent 覆盤）                 ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
-echo -e "${YELLOW}║  ⚠️  設定 Telegram 頻道 ID（在 .env 填入後重跑）：  ║${NC}"
-echo -e "${YELLOW}║     TELEGRAM_WATER_COOLER_ID=                       ║${NC}"
-echo -e "${YELLOW}║     TELEGRAM_APPROVAL_ID=                           ║${NC}"
-echo -e "${YELLOW}║     TELEGRAM_DEV_LOG_ID=                            ║${NC}"
-echo -e "${YELLOW}║     TELEGRAM_CONTENT_ID=                            ║${NC}"
+echo -e "${GREEN}║  📡 Telegram 頻道（全部已設定）：                    ║${NC}"
+echo -e "${GREEN}║     /water_cooler  -1003524949347                   ║${NC}"
+echo -e "${GREEN}║     /dev_log       -1004304403281                   ║${NC}"
+echo -e "${GREEN}║     /ai-approval   -1003976353259                   ║${NC}"
+echo -e "${GREEN}║     /content       -1004315195434                   ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "  log 監控："
