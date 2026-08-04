@@ -45,13 +45,13 @@ TELEGRAM_WATER_COOLER_ID=-1003524949347
 TELEGRAM_DEV_LOG_ID=-1004304403281
 TELEGRAM_APPROVAL_ID=-1003976353259
 TELEGRAM_CONTENT_ID=0
-# ── Phase 2：6 獨立 bot tokens（從 @BotFather 建立後填入）─
-LALA_BOT_TOKEN=REPLACE_ME
-LUMI_BOT_TOKEN=REPLACE_ME
-ORI_BOT_TOKEN=REPLACE_ME
-CRAFT_BOT_TOKEN=REPLACE_ME
-SAGE_BOT_TOKEN=REPLACE_ME
-PIXEL_BOT_TOKEN=REPLACE_ME
+# ── 6 獨立 Agent bot tokens（AI 公司架構）────────────────
+LALA_BOT_TOKEN=8957839082:AAEWZAdQWLycUSq197y-AU1K0jXlJQYjEUc
+LUMI_BOT_TOKEN=8864424266:AAH7nxabLoPGxaUZJBE50L9KgWxgLRDfC8U
+ORI_BOT_TOKEN=7957293575:AAH-LN9RnleoBovS-O-pJ8Zfk7mkh22dOvg
+CRAFT_BOT_TOKEN=8800100563:AAEldu8r0TzHUfNUCO8X4wTqh8H1e9oONts
+SAGE_BOT_TOKEN=8899986888:AAFTmvKO9WWkVrwanqFF87YM0N0KFkxETe4
+PIXEL_BOT_TOKEN=8885153236:AAHPrMJC_0OmeX7yX-W7LY6_tLsksn9qulg
 ENVEOF
 ok ".env 完成"
 
@@ -295,13 +295,13 @@ cat > "$HOME/.hermes/memories/MEMORY.md" << MEMEOF
 - 主頻道（使用者）：${TELEGRAM_HOME_CHANNEL}
 
 ### 目前架構
-- Phase 1（已上線）：單一 bot（Lala）模擬 6 個 Agent，透過 curl 路由至各頻道
-- Phase 2（待建）：6 個獨立 bot，各自有 Telegram Bot Token
-  - Lumi bot：填入 .env LUMI_BOT_TOKEN
-  - Ori bot：填入 .env ORI_BOT_TOKEN
-  - Craft bot：填入 .env CRAFT_BOT_TOKEN
-  - Sage bot：填入 .env SAGE_BOT_TOKEN
-  - Pixel bot：填入 .env PIXEL_BOT_TOKEN
+- 6 個獨立 bot，各自獨立 Hermes 實例（HERMES_HOME + token + SOUL）
+  - Lala CEO、Lumi 開發、Ori 研究、Craft 內容、Sage 市場、Pixel 設計
+  - 全部 token 已填入 .env
+- 啟動 AI 公司：bash launch-company.sh（6 個 gateway 一起起）
+- 查看狀態：bash launch-company.sh status
+- 停止：bash launch-company.sh stop
+- 單一 bot（僅 Lala，含 curl 路由）：bash launch.sh
 
 ## 系統設定
 - 主要模型：Google AI Studio gemini-2.0-flash
