@@ -58,3 +58,7 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+
+# hermes-company bind-mount runtime data (keep dirs, ignore contents)
+/data/*/*
+!/data/*/.gitkeep
