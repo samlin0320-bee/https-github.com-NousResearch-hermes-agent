@@ -40,7 +40,7 @@ services:
       TELEGRAM_BOT_TOKEN: "${LALA_BOT_TOKEN}"
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_APPROVAL_ID}"
     volumes:
-      - lala-data:/opt/data
+      - ./data/lala:/opt/data
 
   # ── 💻 Lumi — 開發 / DevOps ──────────────────────────────
   lumi:
@@ -52,7 +52,7 @@ services:
       TELEGRAM_BOT_TOKEN: "${LUMI_BOT_TOKEN}"
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_DEV_LOG_ID}"
     volumes:
-      - lumi-data:/opt/data
+      - ./data/lumi:/opt/data
 
   # ── 🔬 Ori — 研究 / 競品分析 ─────────────────────────────
   ori:
@@ -64,7 +64,7 @@ services:
       TELEGRAM_BOT_TOKEN: "${ORI_BOT_TOKEN}"
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
     volumes:
-      - ori-data:/opt/data
+      - ./data/ori:/opt/data
 
   # ── ✍️ Craft — 內容 / 文案 ───────────────────────────────
   craft:
@@ -76,7 +76,7 @@ services:
       TELEGRAM_BOT_TOKEN: "${CRAFT_BOT_TOKEN}"
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_CONTENT_ID}"
     volumes:
-      - craft-data:/opt/data
+      - ./data/craft:/opt/data
 
   # ── 📊 Sage — 市場 / 行銷 ────────────────────────────────
   sage:
@@ -88,7 +88,7 @@ services:
       TELEGRAM_BOT_TOKEN: "${SAGE_BOT_TOKEN}"
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
     volumes:
-      - sage-data:/opt/data
+      - ./data/sage:/opt/data
 
   # ── 🎨 Pixel — 設計 / UIUX ───────────────────────────────
   pixel:
@@ -100,7 +100,7 @@ services:
       TELEGRAM_BOT_TOKEN: "${PIXEL_BOT_TOKEN}"
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
     volumes:
-      - pixel-data:/opt/data
+      - ./data/pixel:/opt/data
 
   # ── 🦙 Ollama — 越獄 Gemma 備援（Google 額度用完自動切）──
   ollama:
@@ -108,16 +108,10 @@ services:
     container_name: hermes-ollama
     restart: unless-stopped
     volumes:
-      - ollama-data:/root/.ollama
-    # 如需外部存取可開埠：
+      - ./data/ollama:/root/.ollama
+    # 如需外部存取可開埠（注意：勿與現有服務衝突）：
     # ports:
     #   - "11434:11434"
 
-volumes:
-  lala-data:
-  lumi-data:
-  ori-data:
-  craft-data:
-  sage-data:
-  pixel-data:
-  ollama-data:
+# 全部使用 bind mount（./data/<agent>），資料在 \\MINKANAS\docker\hermes-company\data\
+# 可於 File Station 直接檢視/編輯 SOUL.md、記憶檔，符合本 NAS「bind mount、改檔免重建」慣例。
