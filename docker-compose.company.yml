@@ -1,0 +1,123 @@
+# ============================================================
+# 24/7 全自動 AI 公司 — 6 Agent + Ollama 備援（NAS / Docker）
+#
+# 機密（token、金鑰）從同目錄的 .env 讀取，不寫在本檔（避免進 git）。
+# 首次使用：把 .env.company.example 複製成 .env 並填入實際值，
+#           或直接使用本專案根目錄由 launch.sh 產生的 .env。
+#
+# 啟動： docker compose -f docker-compose.company.yml up -d --build
+# 查看： docker compose -f docker-compose.company.yml ps
+#        docker compose -f docker-compose.company.yml logs -f lala
+# 停止： docker compose -f docker-compose.company.yml down
+# ============================================================
+
+x-agent-common: &agent-common
+  build:
+    context: .
+  image: hermes-company:latest
+  restart: unless-stopped
+  entrypoint: ["bash", "/opt/hermes/docker/company-entrypoint.sh"]
+  depends_on:
+    - ollama
+
+x-agent-env: &agent-env
+  GOOGLE_AI_STUDIO_API_KEY: "${GOOGLE_AI_STUDIO_API_KEY}"
+  TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS}"
+  TELEGRAM_WATER_COOLER_ID: "${TELEGRAM_WATER_COOLER_ID}"
+  TELEGRAM_DEV_LOG_ID: "${TELEGRAM_DEV_LOG_ID}"
+  TELEGRAM_APPROVAL_ID: "${TELEGRAM_APPROVAL_ID}"
+  TELEGRAM_CONTENT_ID: "${TELEGRAM_CONTENT_ID}"
+  OLLAMA_BASE_URL: "http://ollama:11434/v1"
+
+services:
+  # ── 🏢 Lala — CEO / 總控稽核 ──────────────────────────────
+  lala:
+    <<: *agent-common
+    container_name: hermes-lala
+    environment:
+      <<: *agent-env
+      AGENT_NAME: "lala"
+      TELEGRAM_BOT_TOKEN: "${LALA_BOT_TOKEN}"
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_APPROVAL_ID}"
+    volumes:
+      - lala-data:/opt/data
+
+  # ── 💻 Lumi — 開發 / DevOps ──────────────────────────────
+  lumi:
+    <<: *agent-common
+    container_name: hermes-lumi
+    environment:
+      <<: *agent-env
+      AGENT_NAME: "lumi"
+      TELEGRAM_BOT_TOKEN: "${LUMI_BOT_TOKEN}"
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_DEV_LOG_ID}"
+    volumes:
+      - lumi-data:/opt/data
+
+  # ── 🔬 Ori — 研究 / 競品分析 ─────────────────────────────
+  ori:
+    <<: *agent-common
+    container_name: hermes-ori
+    environment:
+      <<: *agent-env
+      AGENT_NAME: "ori"
+      TELEGRAM_BOT_TOKEN: "${ORI_BOT_TOKEN}"
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
+    volumes:
+      - ori-data:/opt/data
+
+  # ── ✍️ Craft — 內容 / 文案 ───────────────────────────────
+  craft:
+    <<: *agent-common
+    container_name: hermes-craft
+    environment:
+      <<: *agent-env
+      AGENT_NAME: "craft"
+      TELEGRAM_BOT_TOKEN: "${CRAFT_BOT_TOKEN}"
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_CONTENT_ID}"
+    volumes:
+      - craft-data:/opt/data
+
+  # ── 📊 Sage — 市場 / 行銷 ────────────────────────────────
+  sage:
+    <<: *agent-common
+    container_name: hermes-sage
+    environment:
+      <<: *agent-env
+      AGENT_NAME: "sage"
+      TELEGRAM_BOT_TOKEN: "${SAGE_BOT_TOKEN}"
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
+    volumes:
+      - sage-data:/opt/data
+
+  # ── 🎨 Pixel — 設計 / UIUX ───────────────────────────────
+  pixel:
+    <<: *agent-common
+    container_name: hermes-pixel
+    environment:
+      <<: *agent-env
+      AGENT_NAME: "pixel"
+      TELEGRAM_BOT_TOKEN: "${PIXEL_BOT_TOKEN}"
+      TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
+    volumes:
+      - pixel-data:/opt/data
+
+  # ── 🦙 Ollama — 越獄 Gemma 備援（Google 額度用完自動切）──
+  ollama:
+    image: ollama/ollama:latest
+    container_name: hermes-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    # 如需外部存取可開埠：
+    # ports:
+    #   - "11434:11434"
+
+volumes:
+  lala-data:
+  lumi-data:
+  ori-data:
+  craft-data:
+  sage-data:
+  pixel-data:
+  ollama-data:
