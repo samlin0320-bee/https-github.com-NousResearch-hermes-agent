@@ -11,6 +11,8 @@
 # 停止： docker compose -f docker-compose.company.yml down
 # ============================================================
 
+version: "3.8"
+
 x-agent-common: &agent-common
   build:
     context: .
