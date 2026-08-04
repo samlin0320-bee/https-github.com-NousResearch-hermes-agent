@@ -63,6 +63,14 @@ else
     ok "Hermes 已安裝"
 fi
 
+# ── 2a. 安裝 CLAUDE.md 工作準則到家目錄（agent cwd）───────
+# Hermes gateway 的 MESSAGING_CWD 預設為 ~，會從此載入專案規則。
+# 放到 ~ 可避免 repo 內 AGENTS.md（優先權更高）遮蔽此規則。
+if [ -f "$SCRIPT_DIR/CLAUDE.md" ]; then
+    cp "$SCRIPT_DIR/CLAUDE.md" "$HOME/CLAUDE.md"
+    ok "CLAUDE.md 工作準則已安裝 → $HOME/CLAUDE.md"
+fi
+
 # ── 2b. 預先下載 Whisper tiny STT 模型 ────────────────────
 run "預先下載 Whisper STT 模型（tiny，約 75 MB）..."
 "$SCRIPT_DIR/venv/bin/python" -c "

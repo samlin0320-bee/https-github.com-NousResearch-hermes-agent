@@ -299,6 +299,12 @@ if [ ! -x "$HERMES" ]; then
     exit 1
 fi
 
+# CLAUDE.md 工作準則 → 家目錄（6 個 agent 的 cwd 皆為 ~，統一載入）
+if [ -f "$SCRIPT_DIR/CLAUDE.md" ]; then
+    cp "$SCRIPT_DIR/CLAUDE.md" "$HOME/CLAUDE.md"
+    ok "CLAUDE.md 工作準則已同步 → $HOME/CLAUDE.md"
+fi
+
 run "建立 6 個 Agent profile..."
 for entry in "${AGENTS[@]}"; do
   IFS='|' read -r name token emoji role home_ch <<< "$entry"
