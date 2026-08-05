@@ -53,6 +53,7 @@ services:
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_APPROVAL_ID}"
     volumes:
       - ./data/lala:/opt/data
+      - ./docker/company-entrypoint.sh:/opt/hermes/docker/company-entrypoint.sh:ro
 
   # ── 💻 Lumi — 開發 / DevOps ──────────────────────────────
   lumi:
@@ -65,6 +66,7 @@ services:
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_DEV_LOG_ID}"
     volumes:
       - ./data/lumi:/opt/data
+      - ./docker/company-entrypoint.sh:/opt/hermes/docker/company-entrypoint.sh:ro
 
   # ── 🔬 Ori — 研究 / 競品分析 ─────────────────────────────
   ori:
@@ -77,6 +79,7 @@ services:
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
     volumes:
       - ./data/ori:/opt/data
+      - ./docker/company-entrypoint.sh:/opt/hermes/docker/company-entrypoint.sh:ro
 
   # ── ✍️ Craft — 內容 / 文案 ───────────────────────────────
   craft:
@@ -89,6 +92,7 @@ services:
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_CONTENT_ID}"
     volumes:
       - ./data/craft:/opt/data
+      - ./docker/company-entrypoint.sh:/opt/hermes/docker/company-entrypoint.sh:ro
 
   # ── 📊 Sage — 市場 / 行銷 ────────────────────────────────
   sage:
@@ -101,6 +105,7 @@ services:
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
     volumes:
       - ./data/sage:/opt/data
+      - ./docker/company-entrypoint.sh:/opt/hermes/docker/company-entrypoint.sh:ro
 
   # ── 🎨 Pixel — 設計 / UIUX ───────────────────────────────
   pixel:
@@ -113,6 +118,7 @@ services:
       TELEGRAM_HOME_CHANNEL: "${TELEGRAM_WATER_COOLER_ID}"
     volumes:
       - ./data/pixel:/opt/data
+      - ./docker/company-entrypoint.sh:/opt/hermes/docker/company-entrypoint.sh:ro
 
   # ── 🦙 Ollama — 越獄 Gemma 備援（Google 額度用完自動切）──
   ollama:
