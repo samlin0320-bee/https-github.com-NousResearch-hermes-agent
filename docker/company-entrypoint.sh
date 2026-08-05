@@ -9,6 +9,16 @@ HERMES_HOME="${HERMES_HOME:-/opt/data}"
 NAME="${AGENT_NAME:?必須設定 AGENT_NAME (lala/lumi/ori/craft/sage/pixel)}"
 GOOGLE_BASE="https://generativelanguage.googleapis.com/v1beta/openai/"
 
+# ── 模型後端（可切換 Google ↔ Ollama）─────────────────────
+# 預設 Google Gemini；在 compose/.env 設下列變數即切換為本地 Ollama：
+#   MODEL_BASE_URL=http://ollama:11434/v1
+#   MODEL_API_KEY=ollama
+#   MODEL_DEFAULT=hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M
+MODEL_BASE_URL="${MODEL_BASE_URL:-$GOOGLE_BASE}"
+MODEL_API_KEY="${MODEL_API_KEY:-$GOOGLE_AI_STUDIO_API_KEY}"
+MODEL_DEFAULT="${MODEL_DEFAULT:-gemini-2.0-flash}"
+SUMMARY_MODEL="${SUMMARY_MODEL:-$MODEL_DEFAULT}"
+
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills}
 
 # ── .env（容器內；token 由 compose 以環境變數注入）─────────
@@ -24,9 +34,9 @@ EOF
 cat > "$HERMES_HOME/config.yaml" <<EOF
 model:
   provider: "custom"
-  base_url: "${GOOGLE_BASE}"
-  api_key: "${GOOGLE_AI_STUDIO_API_KEY}"
-  default: "gemini-2.0-flash"
+  base_url: "${MODEL_BASE_URL}"
+  api_key: "${MODEL_API_KEY}"
+  default: "${MODEL_DEFAULT}"
 custom_providers:
   - name: "ollama-gemma-uncensored"
     base_url: "${OLLAMA_BASE_URL:-http://ollama:11434/v1}"
@@ -46,7 +56,7 @@ streaming:
 compression:
   enabled: true
   threshold: 0.85
-  summary_model: "gemini-2.0-flash"
+  summary_model: "${SUMMARY_MODEL}"
 EOF
 
 # ── 頻道區塊（各 SOUL 共用）───────────────────────────────

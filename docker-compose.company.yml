@@ -28,6 +28,11 @@ x-agent-env: &agent-env
   PYTHONIOENCODING: "utf-8"
   LANG: "C.UTF-8"
   LC_ALL: "C.UTF-8"
+  # ── 模型後端：本地 Ollama 越獄 Gemma（Google 額度為 0，改用本地）──
+  # 若要切回 Google：把下面三行註解掉即可（entrypoint 會 fallback 回 Gemini）
+  MODEL_BASE_URL: "http://ollama:11434/v1"
+  MODEL_API_KEY: "ollama"
+  MODEL_DEFAULT: "hf.co/TrevorJS/gemma-4-E4B-it-uncensored-GGUF:Q4_K_M"
   GOOGLE_AI_STUDIO_API_KEY: "${GOOGLE_AI_STUDIO_API_KEY}"
   TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS}"
   TELEGRAM_WATER_COOLER_ID: "${TELEGRAM_WATER_COOLER_ID}"
