@@ -125,6 +125,9 @@ services:
     image: ollama/ollama:latest
     container_name: hermes-ollama
     restart: unless-stopped
+    environment:
+      # 放大上下文視窗（預設僅 2048，塞不下 Lala 的系統提示 ~3600 token）
+      OLLAMA_CONTEXT_LENGTH: "8192"
     volumes:
       - ./data/ollama:/root/.ollama
     # 如需外部存取可開埠（注意：勿與現有服務衝突）：
